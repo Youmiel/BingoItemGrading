@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from bingo_grading.sources import index as source_index
 from bingo_grading.sources import routes
 from bingo_grading.sources.classify import classify, subject_of
 from bingo_grading.sources.closure import expand
@@ -126,3 +127,40 @@ def test_routes_underground_and_other_dimension() -> None:
     assert routes.decide(source_type="loot_table", subject="minecraft:chests/simple_dungeon", prereq=(), rules=rules) == "underground"
     assert routes.decide(source_type="loot_table", subject="minecraft:chests/bastion_other", prereq=(), rules=rules) == "other_dimension"
     assert routes.decide(source_type="block_drop", subject="minecraft:oak_leaves", prereq=(), rules=rules) == "surface"
+
+
+def test_craft_only_items_are_counted_separately_from_filtered_ones() -> None:
+    """图里有节点但没产出来源行：纯配方属正常，其它家族才是缺口。"""
+    from .support import graph_of
+    from .test_recipes import probabilities, routes as route_rules
+
+    graph = graph_of(
+        [
+            rule("craft:crafted", "item:minecraft:crafted", family="recipes"),
+            rule("mystery", "item:minecraft:mystery", family="code/unknown"),
+        ]
+    )
+    result = source_index.build(graph, probabilities(), route_rules())
+    assert result.graph_items == 2
+    assert result.no_source_items == ["minecraft:crafted", "minecraft:mystery"]
+    assert result.craft_only_items == ["minecraft:crafted"]
+    assert result.filtered_items == ["minecraft:mystery"]
+
+
+def test_index_header_exposes_coverage_gap(tmp_path) -> None:
+    from .support import graph_of
+    from .test_recipes import probabilities, routes as route_rules
+
+    graph = graph_of(
+        [
+            rule("craft:crafted", "item:minecraft:crafted", family="recipes"),
+            rule("mystery", "item:minecraft:mystery", family="code/unknown"),
+        ]
+    )
+    path = tmp_path / "source_index.jsonl"
+    source_index.build(graph, probabilities(), route_rules()).write(path)
+    header, _ = source_index.read(path)
+    assert header["graph_items"] == 2
+    assert header["craft_only_items"] == 1
+    assert header["filtered_items"] == 1
+    assert header["filtered_samples"] == ["minecraft:mystery"]

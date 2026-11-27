@@ -108,6 +108,11 @@ class SourceRecord:
 class BuildResult:
     label: str
     records: list[SourceRecord] = field(default_factory=list)
+    # 图里有 `item:` 节点、却一条来源行都没产出的物品。纯配方物品是正常的
+    # （`recipes` 族本就不算来源），其余说明来源在建索引时被过滤掉了。
+    graph_items: int = 0
+    no_source_items: list[str] = field(default_factory=list)
+    craft_only_items: list[str] = field(default_factory=list)
     unmapped_family: Counter = field(default_factory=Counter)
     unreachable_items: list[str] = field(default_factory=list)
     truncated: int = 0
@@ -120,6 +125,12 @@ class BuildResult:
     # 只由结构模板放置的 block_drop 来源数，用于观察修复覆盖面。
     structure_only: int = 0
 
+    @property
+    def filtered_items(self) -> list[str]:
+        """图里有节点、却不是只由配方构成、仍没产出来源行的物品。"""
+        craft = set(self.craft_only_items)
+        return [item for item in self.no_source_items if item not in craft]
+
     def write(self, path: Path) -> None:
         """按物品、来源类别、规则 ID 排序写出，两次构建逐字节一致。"""
         path = Path(path)
@@ -130,6 +141,12 @@ class BuildResult:
             "label": self.label,
             "source_count": len(self.records),
             "item_count": len({record.item for record in self.records}),
+            "graph_items": self.graph_items,
+            "no_source_items": len(self.no_source_items),
+            "craft_only_items": len(self.craft_only_items),
+            "filtered_items": len(self.filtered_items),
+            "no_source_samples": self.no_source_items[:10],
+            "filtered_samples": self.filtered_items[:10],
             "unmapped_family": dict(self.unmapped_family),
             "truncated": self.truncated,
             "cycled": dict(self.cycled),
@@ -146,6 +163,12 @@ class BuildResult:
             "label": self.label,
             "items": len({record.item for record in self.records}),
             "sources": len(self.records),
+            "graph_items": self.graph_items,
+            "no_source_items": len(self.no_source_items),
+            "no_source_samples": self.no_source_items[:10],
+            "craft_only_items": len(self.craft_only_items),
+            "filtered_items": len(self.filtered_items),
+            "filtered_samples": self.filtered_items[:10],
             "by_type": dict(self.by_type.most_common()),
             "by_route": dict(self.by_route.most_common()),
             "by_yield_source": dict(self.by_yield_source.most_common()),
@@ -173,11 +196,14 @@ def build(
     result = BuildResult(label=graph.label)
     structures = structures or StructureMaps()
     placement = placement or PlacementIndex.from_graph(graph)
-    for node in sorted(graph.item_heads()):
+    heads = sorted(graph.item_heads())
+    result.graph_items = len(heads)
+    for node in heads:
         item = node.split(":", 1)[1]
         if not graph.is_true(node):
             result.unreachable_items.append(item)
             continue
+        before = len(result.records)
         for rule in graph.rules_for(node):
             source_type = classify(rule)
             if source_type is None:
@@ -282,6 +308,11 @@ def build(
             result.records.append(record)
             result.by_type[source_type] += 1
             result.by_route[route] += 1
+        if len(result.records) == before:
+            result.no_source_items.append(item)
+            families = {rule.family for rule in graph.rules_for(node) if rule.family}
+            if families and families <= SYNTHETIC_FAMILIES:
+                result.craft_only_items.append(item)
     return result
 
 

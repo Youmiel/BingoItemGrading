@@ -10,6 +10,8 @@ from ... import config as config_module
 from ... import paths
 from ...sources import actionsets
 from ...sources import graph as graph_module
+from ...sources import index as source_index
+from ...sources.actions import default_index
 from ...sources.knowledge import KnowledgeError, load_routes, load_structure_maps, probabilities_table
 from ...stats import store as stats_store
 from ...stats.model import StatError
@@ -142,6 +144,31 @@ def cmd_doctor(args: argparse.Namespace) -> int:
             + f"（{layer_note}）",
         )
     )
+
+    # 图里有物品节点、却没有产出来源行：纯配方物品是正常的（`recipes` 不算来源），
+    # 其余说明规则在建索引时被过滤掉了，只有这里能看到——`summary()` 的
+    # `unmapped_family` 为空并不代表覆盖完整，recipes 族从不计入它。
+    try:
+        index_header, _ = source_index.read(default_index(args.pack))
+    except FileNotFoundError:
+        checks.append(("sources", True, "尚未构建（先跑 `bg index sources`）"))
+    except ValueError as exc:
+        checks.append(("sources", False, str(exc)))
+    else:
+        filtered = int(index_header.get("filtered_items") or 0)
+        if filtered:
+            sample = "、".join(index_header.get("filtered_samples") or ())
+            checks.append(("sources", False, f"{filtered} 个物品在图里却没有来源行：{sample}"))
+        else:
+            checks.append(
+                (
+                    "sources",
+                    True,
+                    f"{index_header.get('graph_items', '?')} 个图节点 → "
+                    f"{index_header.get('item_count', '?')} 个有来源，"
+                    f"{index_header.get('craft_only_items', 0)} 个只有配方",
+                )
+            )
 
     try:
         structures = load_structure_maps(Path(args.knowledge) / "structure_sets.toml")

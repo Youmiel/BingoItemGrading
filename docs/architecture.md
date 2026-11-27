@@ -127,13 +127,15 @@ flowchart TB
 | `facts.jsonl` 的 `loot_expectation` | `bg data loot` | 数据包战利品表 + `template.jsonl` |
 | `build/<pack>/source_index.jsonl` | `bg index sources` | `graph.json` + 统计 + 知识表 |
 | `build/<pack>/slots.jsonl` | `bg index slots` | 来源索引 + 配方 IR |
-| `build/<pack>/actions.jsonl` | `bg index actions` | 来源索引 + 统计 + 配方事实 |
+| `build/<pack>/actions.jsonl` | `bg index actions` | 来源索引 + 统计 + 配方事实 + 构建策略版本 |
 | 难度表与直方图 | `bg grade` | 落盘动作图 |
 | 路线合成图（DOT/SVG/HTML） | `bg plan --graph-out` | 现场拼图的动作集 |
 
 合成图默认走 `route_graph_ra`：图结构与渲染层照搬 RecipeAnalysis 的 `PathGraph` / `build_dot`（item 矩形、rule 菱形），本仓库只提供 `PathTree → PathGraph` 的 adapter 与 HTML 外壳（路线对照表）。**图上的成本与调用次数按整次调用口径**（`plan/whole.py`，与 `bg grade` 共用）：不可分割的动作写「整次调用 = 52.22 TU」，多趟才写「整次调用 ×12」，不会画成「单价 9.44 × 调用 0.54 次」。整次口径与均摊口径一样做 `once` 去重，但分两阶段：先解出树，再整树前序去重、自底向上重算（把「已付」并进缓存键会让 `elytra` 从 0.4 s 涨到 250 s）。HTML 的版式与 RA 对齐：标题下一行统计摘要（节点/动作/边/未画候选数），然后是图例、**生成参数、图**、路线对照表。「生成参数」块（`options.RunInfo`）在**图之上**用 grid 铺开全部生效参数，并附一条可直接重跑的命令与输入指纹（动作图条数 + 统计摘要）——沿用 RA `PathOptions.describe()` 的原则：**写全、不写「与默认值的差」、不折叠**，图脱离命令行传阅时也能复算。图例只留读图必需的几条，固定成本去重、深度截断、回边等一次性说明收进 `<details>`。旧的单层节点渲染器 `route_graph.py` 与 `--graph-legacy` 已于 2026-11-25 删除。HTML 另附「前置替换成本」表（`--graph-frontiers`）：禁用某前置当前的来源后**重新求解整条路线**，差额含固定成本去重与多级依赖的真实变化。图里也可以直接画上游候选（`--graph-branches` / `--graph-branch-ratio` / `--graph-max-nodes`）：默认每个物品画最优 + 2 个备选、只画贵不到 1.5 倍的，超出上限的数量画成橙框虚线节点。**没画出来的东西一律留痕**：物品还有别的来源时挂「还有 N 条候选」，`--graph-paths` 截掉的整条路线挂在 target 上写「还有 N 条路线」，tooltip 与 HTML 表格下都列出明细（名次、动作、成本比）——否则读者会以为图上就是全部候选（`diamond` 实测 19 条路线，默认只画 3 条）。候选与最优的倍数按**本次在这个位置需要的件数**算，不是按曲线第一段（曲线只按「拿 1 件的全价」排序，拿 10 件时最便宜的可能换人）：主路线已经在用的那条来源不会再被当成「第二来源」重画，红色也不会被候选刷淡。依赖回到自己的上游候选不画（`diamond` 的「钻石块分解」要经过 `diamond_block`，而钻石块又要钻石合成，画出来只剩一个没有入边的合成节点），只在虚线节点的 tooltip 里注明「依赖自己」。已经画出来的路线里遇到回边时，画成不参与层级计算的虚线，表示这一步要用的东西本页正在造，那一份按该物品的最优价计。
 
 **整次口径只有一个入口**：`plan/whole.py::whole_choice`（单目标）与它上面的 `best_bundle`（多目标一次买齐）。`bg plan`、合成图、`bg grade` 的单件成本、`bg grade --together` 的前置定价与 `once` 去重全部走这一份递归；`--together` 只额外负责「一个动作同时供给多件」那层枚举。此前这三处各有一套取整与去重规则（`--together` 甚至不用引擎曲线），已收敛（见 [`model/gap-register-minor.md`](model/gap-register-minor.md) S5/S7）。JSON 字段名也统一了：`cost_tu` 一律是均摊口径，整次口径一律叫 `whole_cost_tu`。
+
+落盘动作图的失效判据分两种：`ACTIONS_SCHEMA` 管**文件结构**（增删字段才升），`BUILD_POLICY` 管**构建策略**（`sources/actions/*` 的动作生成、`case/context/*` 的取值口径、全库 targets 的取法）。`BUILD_POLICY` 与输入文件一起进 `digest_inputs` 的哈希，所以「同一批输入配新逻辑」也会判过期；`bg doctor` 与 `bg grade --all` 都按指纹校验，不会静默沿用旧图。只改求解/计价（`plan/*`、`grade.py`）不影响落盘图，不用动版本号。
 
 `data/upstream/`、`data/stats/` 与 `build/` 都不入库：前者由 `bg data sync` 重建，中者由 `bg data ingest` 与 `bg data loot` 重建，后者是运行产物。
 

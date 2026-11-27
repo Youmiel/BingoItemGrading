@@ -164,6 +164,18 @@ def test_digest_tracks_input_content(tmp_path: Path) -> None:
     assert actionsets.digest_inputs(**kwargs) != changed
 
 
+def test_digest_tracks_build_policy(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """同一批输入配上不同的构建逻辑，产出的图不是同一张。"""
+    index = tmp_path / "source_index.jsonl"
+    stats = tmp_path / "world_stat.jsonl"
+    index.write_text('{"index_schema": 3}\n', encoding="utf-8")
+    stats.write_text('{"row": 1}\n', encoding="utf-8")
+    kwargs = {"pack": "26.3", "index_path": index, "stats_path": stats}
+    before = actionsets.digest_inputs(**kwargs)
+    monkeypatch.setattr(actionsets, "BUILD_POLICY", actionsets.BUILD_POLICY + 1)
+    assert actionsets.digest_inputs(**kwargs) != before
+
+
 def test_header_records_no_action_items(tmp_path: Path) -> None:
     """有来源记录、但图上没有动作的物品进头部，写读往返保留。"""
     path = tmp_path / "a.jsonl"

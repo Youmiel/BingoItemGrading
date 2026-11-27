@@ -26,6 +26,15 @@ from bingo_grading.plan import Action, ActionSet
 
 ACTIONS_SCHEMA = 1
 
+# 落盘图的**构建策略**版本。`ACTIONS_SCHEMA` 只管文件结构（增删字段），而
+# 「同一份输入、构建逻辑变了、产出的图不同」由这个数表达：它参与
+# `digest_inputs`，所以策略一变，所有旧图自动判过期并要求重建。
+#
+# 下列改动要 +1：`sources/actions/*` 的动作生成、`case/context/*` 的取值口径、
+# 全库 targets 的取法（例如把纯配方物品纳入）。只改求解/计价（`plan/*`、
+# `grade.py`）不影响落盘图，不用动。
+BUILD_POLICY = 1  # 1：2026-11-27 引入，初始值
+
 # 头部里用到的键。写盘与读盘共用，避免两处各写一遍。
 _HEADER_KEYS = (
     "actions_schema",
@@ -95,6 +104,9 @@ def digest_inputs(*, pack: str, index_path: Path, stats_path: Path) -> str:
     candidates.extend(sorted(paths.KNOWLEDGE_ROOT.glob("*.toml")))
 
     hasher = hashlib.sha256()
+    # 构建策略也算输入：同一批文件配上不同的生成逻辑，产出的图不是同一张。
+    hasher.update(f"build_policy={BUILD_POLICY}".encode("ascii"))
+    hasher.update(b"\0")
     for path in candidates:
         hasher.update(_relative(Path(path)).encode("utf-8"))
         hasher.update(b"\0")

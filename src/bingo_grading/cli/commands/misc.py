@@ -181,8 +181,17 @@ def cmd_doctor(args: argparse.Namespace) -> int:
 
     # 动作图的前置完整性：前置指向一个不存在的物品时，分层会把它判成 `no_rule`
     # 并静默丢弃——那类 bug（工具名拼错、上游新增需求未接）只能在构建时记账。
+    # 必须带上 `expect_digest`：只查 schema 的话，构建策略或输入变了、图却没重建
+    # 时这里会照报 OK，实际用的是过期图。
     try:
-        actions_file = actionsets.read(actionsets.default_path(args.pack))
+        actions_file = actionsets.read(
+            actionsets.default_path(args.pack),
+            expect_digest=actionsets.digest_inputs(
+                pack=args.pack,
+                index_path=default_index(args.pack),
+                stats_path=stats_path(args.pack, args.stats),
+            ),
+        )
     except actionsets.ActionsFileMissing:
         checks.append(("actions", True, "尚未构建（先跑 `bg index actions`）"))
     except actionsets.ActionsFileError as exc:

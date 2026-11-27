@@ -41,6 +41,91 @@
 **S3 · 模板物品绑定** —— `binding:template-item:<容器>:<物品>`，上游只说了
 「某个模板里放了这个容器」，没有表名（体检里 56 次）。属 R4 / R7 范畴。
 
+**S4 · 模板绑定的「多处/多趟」未建模**（2026-11-26 记录）
+
+`_binding_items` 用 `structure_block(batch=1.0, capacity=inf)` 造动作：一次调用
+＝挖 1 个容器、得 1 份物品，`extra_trips = max(0, 1/per_start − 1)` 只补「第一处
+不够一个」的行程。但 `capacity=inf` 让引擎可以无限次调用同一动作，而每次调用的
+`batch` 恒为 1，所以**永远算不出第二趟**：
+
+| 物品 | 每处份数 | 要 200 份 | 当前成本 | 应有成本 |
+|---|---|---|---|---|
+| `brick`（trial_chambers） | 164.60 | 200 | 200 × 1.00 = 200 TU（0 额外行程） | 2 趟 × 126.65 = 253 TU 行程 |
+| `string`（trial_chambers） | 0.33 | 10 | 10 × 257.50 = 2575 TU（每次重复补 2.03 趟） | 30 趟 × 126.65 ≈ 3800 TU |
+
+方向**不一致**：`per_start > 1` 时低估（不收超出的趟），`per_start < 1` 时高估
+（每次调用都重收同一段超出行程）。根源与 `structure_block` 注释里警告过的
+「配 `capacity=inf` 等于宣称一趟结构能无限出方块」是同一个坑。
+
+**修复方向**：`capacity` 应为 `per_start`（每处有几个容器），超出部分由「同一结构
+的下一次行程」承接——需要 `structure_block` 支持「同集合第 N 趟」的来源，而不是
+在单次调用里摊。**触发条件**：当某件物品的主路线落到 `bind:` 上时优先修（当前
+10 个 bind 动作都是备选来源）。
+
+**已修（同日）**：`ancient_city` 的绑定曾完全不含行程——`_ensure_capability` 收的是
+**结构变体名**（`minecraft:ancient_city`），而密度行按**结构集名**
+（`minecraft:ancient_cities`）记，查不到就静默归零（`deepslate` 从 3.62 → 495.81 TU）。
+`StructureMaps.set_of()` 现在做这层反查。
+
+**S5 · 整次口径丢掉了跨分支的 `once` 去重**（2026-11-26 记录，**2026-11-27 已修**）
+
+均摊口径有 `requires.dedupe_once`：同一条路线里两笔 `capability:villages` 是同一趟村庄，
+只收一次。整次口径（`plan/whole.py`）原本没有这层：`whole_choice` 对每个动作的每个
+`once` 前置都独立递归，各付全价。实测 `dragon_egg` 的整次树里
+`capability:lava_access@lake` 出现 4 次、`capability:nether_access` 2 次、
+`capability:bucket` 2 次，方向**高估**（1598 TU，其中约 232 TU 是重复计费）。
+
+**修法**（`plan/whole.py::dedupe_once_costs`）：**两阶段**——先不带去重地解出树
+（缓存键仍是 `(item, demand)`），再对整棵树做一次前序去重：第一次出现的 `once`
+保留原价，之后同名的置 0 并标 `already_paid`，最后自底向上重算 `cost` / `variance`。
+`want_children` 下仍为重复前置挂一个 0 成本占位节点，图上「有这一步」但不再计费。
+
+**不要**把 `paid` 并进 `memo` 键：那样虽然精确，但键空间会随组合爆炸
+（`elytra` 从 0.4 s 涨到 **250 s**、1850 万次递归）；两阶段版同一物品只要 10 ms。
+
+**残留**：路线是在「不知道共享能省钱」的前提下选的，未必是共享收益最大那条，
+只会高估不会低估。`dragon_egg` 实测 1598.12 → **1365.83**（均摊参考 1319.38）。
+
+**S6 · 批量动作的产出不跨分支共用**（2026-11-27 记录）
+
+`dedupe_once_costs` 只合并 `once`（一次性前置）。**有批量产出的普通物品**仍然每处
+各付一趟：`kill:iron_ingot:iron_golem` 一次给 4 个铁锭、42.11 TU，而 `dragon_egg`
+的整次树里 `bucket` 要 3 个、`flint_and_steel` 要 1 个，合计 4 个——恰好一趟就够，
+却按 2 趟收了 **84.22 TU**（正确值 42.11）。
+
+**后果**：方向是**高估**，量级 = 多出来的那些趟。`dragon_egg` 实测差 42.11 TU
+（1365.83 vs 扣掉重复后的约 1323.7，均摊口径 1319.38 已经按件摊过所以没有这部分）。
+
+**为什么不能顺手并进 S5 的修法**：`once` 的语义是「整条链只买一次」，成本记 0 是
+精确的；而批量动作要按「已产出的余量」抵扣，得知道每次调用的产出数。更要紧的是
+**图的算式会失配**：图上的 `总代价 = 本动作 + Σ前置` 是按树逐节点累加的，
+一旦按全树聚合需求重新定价，节点级的归属就和总额对不上了，需要另设一套归属规则
+（谁付这一趟、其余记 0 还是按件摊）。
+
+**修复方向**：把树按物品汇总需求 `D_X = Σ need`，用 `_solve_choice(X, D_X)` 求
+`own_cost`，总额 = `Σ_X own_cost(X, D_X)`（这正是「Σ 全节点 own_cost」的去重版）；
+迭代到 `D` 收敛（通常 1～2 轮）。归属规则建议「第一次出现付整趟、后续记 0」，
+与 S5 的占位节点同形。
+
+**S7 · `--together` 曾是一套独立的整次实现**（2026-11-27 记录，**同日已修**）
+
+`grade.best_bundle()` 原先自己算一套：`curves` 参数调用方传 `None`、函数体内只往下
+传从不读取（等于完全不用引擎曲线），自己的 `math.ceil` 取整，自己的 `paid` 去重
+——而且把 `paid` **并进 memo 键**，再靠 `top` 只往下扩一层来防组合爆炸。
+
+后果是 `bg grade --together` 印的「省了多少」= `Σ best_whole_cost`（走 `whole.py`）
+减 `best_bundle`（另一套），**两个不同实现之差**。两套去重规则的覆盖深度不同：
+`whole.py` 是全树前序、任意深度；`best_bundle` 只扩一层。实测
+`blaze_rod + ancient_debris`：旧实现 355.74 TU（省 120.45），共用同样两件要付的
+`capability:nether_access` 157.73 其实藏在 `capability:minecraft:nether_complexes`
+的子树里，旧实现抓不全 → 新实现 318.45 TU（省 157.73，正好等于一次下界通行）。
+
+**修法**：`best_bundle` 只保留「一个动作同时供给多件」这层枚举，每步的 `requires`
+改调 `whole_choice(..., want_children=True)`，最后对整棵树调一次 `dedupe_once_costs`。
+`paid` / `top` 两个参数删除，`curves` 必须真传（`_grade_together` 先 `solve()` 一次）。
+子树必须带：去重要看得见前置**内部**的 `once`，否则 `nether_complexes` 里那 157.73
+对它是黑盒。
+
 ### 1.4 精度（P3）
 
 **A1 · `p95` / 二阶矩** —— `docs/design-route-competition.md` 第十节把评分定成

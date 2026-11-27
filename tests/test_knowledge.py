@@ -50,6 +50,29 @@ def test_structure_map_absent_file_is_empty(tmp_path: Path) -> None:
     assert maps.set_for_table("minecraft:chests/village/village_temple") is None
 
 
+def test_structure_map_reverse_lookup(tmp_path: Path) -> None:
+    """变体 → 结构集的反查：密度行按集合记，模板绑定给的是变体。
+
+    不做这层反查，`nearest_distance(变体)` 返回 `None`，行程成本静默归零
+    （`ancient_city` 的三件绑定物品曾因此免费到达）。
+    """
+    path = write(
+        tmp_path / "s.toml",
+        "[loot_prefixes]\n"
+        '"chests/" = "minecraft:other"\n'
+        "\n"
+        "[structure_members]\n"
+        '"minecraft:ancient_cities" = ["minecraft:ancient_city"]\n'
+        '"minecraft:igloos" = ["minecraft:igloo"]\n',
+    )
+    maps = load_structure_maps(path)
+    assert maps.set_of("minecraft:ancient_city") == "minecraft:ancient_cities"
+    assert maps.set_of("minecraft:igloo") == "minecraft:igloos"
+    # 本身就是集合名时保持原样（调用方用 `or 原名` 兜底）
+    assert maps.set_of("minecraft:ancient_cities") is None
+    assert maps.set_of("minecraft:nowhere") is None
+
+
 def test_routes_reject_top_level_after_table(tmp_path: Path) -> None:
     path = write(
         tmp_path / "r.toml",

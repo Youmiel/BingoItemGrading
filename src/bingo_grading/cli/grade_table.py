@@ -303,7 +303,10 @@ def _grade_together(
     assert built is not None
     aset = built.actionset()
     demands = {item: args.count for item in items}
-    bundle = grade_module.best_bundle(aset, None, demands)
+    # `curves` 必须是真曲线：`best_bundle` 的前置定价走 `plan/whole.py`，
+    # 没有曲线就无从递归（此前这里传 `None`，因为老实现完全不用曲线）。
+    bundled = solve_plan(aset, items[0], args.count, prune_dominated=False)
+    bundle = grade_module.best_bundle(aset, bundled.curves, demands)
     if bundle.cost is None:
         print_json({"error": "组合算不出可行路线", "demands": demands})
         return 1
@@ -318,7 +321,8 @@ def _grade_together(
         breakdown.append(
             {
                 "item": item,
-                "cost_tu": None if cost is None else round(cost, 4),
+                # 逐件对照用的是整次口径（与 `bundle` 同口径，两者的差才有意义）。
+                "whole_cost_tu": None if cost is None else round(cost, 4),
                 "route": action_id,
                 "route_label": label,
             }

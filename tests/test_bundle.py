@@ -39,7 +39,7 @@ def _bundle_of(ctx: CaseContext, items: list[str]) -> tuple[object, float]:
         for action in one.bundle.actions:
             built.emit(action)
     aset = built.actionset()
-    bundle = grade.best_bundle(aset, None, {item: 1.0 for item in items})
+    bundle = grade.best_bundle(aset, solve(aset, items[0], 1.0).curves, {item: 1.0 for item in items})
     separate = 0.0
     for item in items:
         solved = solve(aset, item, 1.0)

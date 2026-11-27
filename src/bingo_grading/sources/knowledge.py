@@ -119,6 +119,19 @@ class StructureMaps:
                 return value
         return ()
 
+    def set_of(self, variant: str) -> str | None:
+        """某个变体属于哪个结构集。反查 `members`。
+
+        `structure_density` 只按**集合**记录（`minecraft:ancient_cities`），
+        但模板绑定这类来源给的是**变体**（`minecraft:ancient_city`）。
+        不做这层反查，`nearest_distance(变体)` 会返回 `None`，行程成本
+        静默归零——ancient_city 的三个绑定物品因此曾是「免费到达」。
+        """
+        for key, value in self.members:
+            if variant in value:
+                return key
+        return None
+
     def volume_of(self, structure_set: str) -> float | None:
         """没有包围盒的结构每处占多体积。没登记返回 `None`。"""
         for key, value in self.feature_volumes:

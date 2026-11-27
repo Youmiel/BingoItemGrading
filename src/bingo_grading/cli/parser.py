@@ -13,7 +13,7 @@ from ..stats.importers import loot as loot_import
 
 from .commands.data import cmd_loot_build, cmd_stats_import, cmd_upstream_sync, cmd_upstream_verify
 from .commands.index import cmd_graph_build, cmd_slots, cmd_sources_build
-from .commands.misc import cmd_config, cmd_doctor, cmd_stats_resolve
+from .commands.misc import cmd_config, cmd_doctor, cmd_kinds, cmd_stats_resolve
 from .commands.solve import cmd_grade, cmd_mining, cmd_observe, cmd_plan
 
 
@@ -182,7 +182,10 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=3,
         metavar="N",
-        help="合成图画前几条路线（默认 3）",
+        help=(
+            "合成图画前几条路线（默认 3）。没画出来的会在图上标一个「还有 N 条路线」"
+            "节点（tooltip 列明细），HTML 的路线对照表下也会列出来"
+        ),
     )
     plan.add_argument(
         "--graph-depth",
@@ -313,6 +316,16 @@ def build_parser() -> argparse.ArgumentParser:
     )
     config_cmd.add_argument("--pack", required=True, help="地形包版本")
     config_cmd.set_defaults(handler=cmd_config)
+
+    kinds_cmd = sub.add_parser(
+        "kinds",
+        help="列出动作前缀的计数口径（离散 / 可分割）与理由",
+    )
+    kinds_cmd.add_argument(
+        "--out",
+        help="写成 Markdown（例如 docs/data/action-kinds.md）；缺省打到终端",
+    )
+    kinds_cmd.set_defaults(handler=cmd_kinds)
 
     # ── data：写 data/ ────────────────────────────────────────────────
 

@@ -34,6 +34,12 @@ EPS = 1e-9
 # 超过这个数才退回「跳过后缀」的旧族，避免 2^n 爆掉。
 MAX_ENUM_SEGMENTS = 12
 
+# 尾部成本的分位系数：正态单侧 95%。
+#
+# `Curve.tail_cost()`（均摊曲线）与 `grade` 的整次口径 p95 都用它——两处必须是
+# 同一个数，否则「尾部 TU」与「整次 TU」的差就不是纯粹的口径差了。
+TAIL_Z = 1.645
+
 
 def merge_fixed(*groups: Iterable[tuple[str, float]]) -> tuple[tuple[str, float], ...]:
     """把几组固定成本按**名字**合并：同一个前置只付一次。
@@ -252,12 +258,12 @@ class Curve:
             remaining -= take
         return total
 
-    def tail_cost(self, count: float, *, z: float = 1.645) -> float:
+    def tail_cost(self, count: float, *, z: float = TAIL_Z) -> float:
         """取得 `count` 件的 **p95 成本**：`cost + z · sd`。容量不够时为 `inf`。
 
-        `z = 1.645` 是正态单侧 95%，与 `p95` 的采集口径一致。这是**查询**，
-        不改变 `cost()` 的口径——要不要用它打分由调用方决定，`Plan.cost`
-        里仍是平均成本。
+        `z` 默认 `TAIL_Z`（正态单侧 95%），与 `p95` 的采集口径一致，也是
+        `grade` 整次口径用的同一个常数。这是**查询**，不改变 `cost()` 的口径
+        ——要不要用它打分由调用方决定，`Plan.cost` 里仍是平均成本。
         """
         base = self.cost(count)
         if not math.isfinite(base):

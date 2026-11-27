@@ -11,9 +11,11 @@ from ...case.context import CaseContext, CaseError
 from ...case.registry import builder_for
 from ...plan import PlanError, SolveError, SupplyError, TierError
 from ...plan import solve as solve_plan
-from ...plan.explain import rank_paths, render as render_paths
+from ...plan.explain import PathTree, rank_paths, render as render_paths
+from ...plan.whole import WholeChoice, to_step_tree, whole_choice, whole_choices
 from ...plan.frontiers import frontiers as frontier_rows
 from ...route_graph_ra import write_outputs as write_route_graph
+from ...route_graph_ra.options import RunInfo
 from ...mining import MiningError, estimate_from_row
 from ... import grade as grade_module
 from ... import observe as observe_module
@@ -22,9 +24,14 @@ from ...sources import actionsets
 from ...sources import graph as graph_module
 from ...stats import store as stats_store
 from ...gamedata import MIN_DENSITY_BLOCKS
+from ... import units
 
 from ..common import _score, _tier, index_path, print_json, stats_path
 from ..grade_table import _emit_histogram, _grade_all, _grade_items, _grade_one, _grade_solved, _grade_together, _graph_file
+
+# 画图时要「列到底」才能知道总共有几条路线（实测最深的物品 86 条、约 0.25 s）。
+# 上限只是防某个物品的顶层来源爆掉，正常用不到。
+PATH_LIST_CAP = 200
 
 
 
@@ -110,33 +117,137 @@ def cmd_mining(args: argparse.Namespace) -> int:
 
 
 
+def _input_digest(args: argparse.Namespace) -> str:
+    """输入指纹（来源索引 + 统计快照 + 配方/知识表），失败时返回空串。
+
+    它只用于「两份图是不是同一批数据画的」这一判断，算不出来不该让画图失败。
+    """
+    try:
+        index_path = (
+            Path(args.index)
+            if getattr(args, "index", None)
+            else source_actions.default_index(args.pack_version)
+        )
+        return actionsets.digest_inputs(
+            pack=args.pack_version,
+            index_path=index_path,
+            stats_path=stats_path(args.pack_version, getattr(args, "stats", None)),
+        )
+    except Exception:  # noqa: BLE001 - 指纹是附加信息，不阻断主流程
+        return ""
+
+
+def _display_path(value: str) -> str:
+    """路径只显示「从哪里来」，不显示本机绝对路径。
+
+    绝对路径带用户名，不该进产物（与 `actionsets._relative` 同一条约束）。
+    仓库内的相对路径原样保留（它能说明用了哪份输入），绝对路径退成文件名。
+    """
+    path = Path(value)
+    if path.is_absolute():
+        return path.name
+    return value
+
+
+def _run_info(
+    args: argparse.Namespace, actionset, *, output_hint: str = "PATH", digest: str = ""
+) -> RunInfo:
+    """还原本图的生成参数：一条可复跑的命令 + 逐项明细。
+
+    **不含 `--graph-out`**：它只是产物写到哪里，与图长什么样无关，而读者拿到
+    HTML 时文件已经在那儿了。命令里用占位符 `PATH` 提示需要自己填，不填
+    `<路径>` 这类尖括号——在 bash / PowerShell 里会被当成重定向。
+
+    `--stats` / `--index` 影响内容，保留；值只留相对路径或文件名。
+    """
+    entries: list[tuple[str, str]] = [
+        ("--item", str(args.item)),
+        ("--count", f"{args.count:g}"),
+        ("--pack-version", str(args.pack_version)),
+        ("--graph-paths", str(max(1, int(getattr(args, "graph_paths", 3))))),
+        ("--graph-depth", str(max(1, int(getattr(args, "graph_depth", 16))))),
+        ("--graph-frontiers", str(max(0, int(getattr(args, "graph_frontiers", 8))))),
+        ("--graph-branches", str(max(0, int(getattr(args, "graph_branches", 3))))),
+        ("--graph-max-nodes", str(max(0, int(getattr(args, "graph_max_nodes", 500))))),
+        (
+            "--graph-branch-ratio",
+            f"{float(getattr(args, 'graph_branch_ratio', 1.5) or 0.0):g}",
+        ),
+    ]
+    dimension = str(getattr(args, "dimension", "minecraft:overworld"))
+    if dimension != "minecraft:overworld":
+        entries.append(("--dimension", dimension))
+    for name in ("stats", "index"):
+        value = getattr(args, name, None)
+        if value:
+            entries.append((f"--{name}", _display_path(str(value))))
+    switches: list[str] = []
+    if getattr(args, "no_prune", False):
+        switches.append("--no-prune")
+    command = " ".join(
+        [
+            "bg plan",
+            *(f"{flag} {value}" for flag, value in entries),
+            *switches,
+            f"--graph-out {output_hint}",
+        ]
+    )
+    entries.extend((flag, "（开关）") for flag in switches)
+    return RunInfo(
+        command=command,
+        entries=tuple(entries),
+        action_count=len(getattr(actionset, "actions", ()) or ()),
+        stats_digest=digest,
+    )
+
+
 def _print_plan_summary(
     solved,
     built,
     *,
     graph: list[str] | None,
     out_path: Path | None,
+    whole=None,
 ) -> None:
     """`plan` 的终端摘要：结论 + 动作链摘要 + 产物路径。
 
     完整诊断（曲线、假设、剪枝、来源、缺口）体量在百 KB 级，默认只写盘。
+    路线与分数按**整次调用**口径给（`whole`），均摊值只作参考：
+    连续松弛允许「调用 0.54 次」，那不是能执行的次数。
     """
     plan = solved.plan
     demand = f"{plan.demand:g} 个"
-    if plan.feasible:
+    if whole is not None and whole.cost is not None:
+        head = (
+            f"{plan.target}  {demand} → {whole.cost:.2f} TU"
+            f"（{units.score_from_cost(whole.cost)} 分 / 第 {units.tier_of(whole.cost)} 档）"
+        )
+        note = (
+            f"  口径  整次调用（不可分割动作按整次计）；"
+            f"均摊参考 {plan.cost:.2f} TU"
+        )
+        route = f"  路线  {whole.action_id or '（无动作）'} ×{whole.calls:g}"
+    elif plan.feasible:
         head = (
             f"{plan.target}  {demand} → {plan.cost:.2f} TU"
             f"（{plan.score} 分 / 第 {plan.tier} 档）"
         )
+        note = (
+            f"  分项  local {plan.local_cost:.2f} + per_use {plan.per_use_cost:.2f}"
+            f" + once {plan.once_cost:.2f}（共享省 {plan.shared_saving:.2f}）"
+        )
+        route = ""
     else:
         head = f"{plan.target}  {demand} → 不可行：{plan.missing or '未知原因'}"
+        note = ""
+        route = ""
     print(head)
-    print(
-        f"  分项  local {plan.local_cost:.2f} + per_use {plan.per_use_cost:.2f}"
-        f" + once {plan.once_cost:.2f}（共享省 {plan.shared_saving:.2f}）"
-    )
+    if note:
+        print(note)
+    if route:
+        print(route)
     steps = plan.steps
-    if steps:
+    if steps and not (whole is not None and whole.cost is not None):
         shown = "、".join(
             f"{step.action_id} ×{step.invocations:g}" for step in steps[:4]
         )
@@ -186,6 +297,58 @@ def cmd_plan(args: argparse.Namespace) -> int:
 
     payload = solved.as_dict(detail=args.expand)
     payload["assumptions"] = built.assumptions
+    # 路线与成本按**整次调用**口径重算：连续松弛允许「调用 0.54 次」，那是批量
+    # 规划用的；单件规划里「跑一趟结构」要么进要么不进。与 `bg grade` 共用
+    # `plan/whole.py` 的递归，两处不会对同一件事给出两个答案。
+    #
+    # 要画图时**列到底**（实测 `diamond` 26 条 / `iron_ingot` 86 条，各约 0.25 s）：
+    # 只有知道总数，才能在图和表上写「还有几条没画」——`--graph-paths` 默认只画 3 条。
+    graph_paths = max(1, int(getattr(args, "graph_paths", 3)))
+    path_limit = max(1, int(getattr(args, "path_limit", 3)))
+    want_all = bool(getattr(args, "graph_out", None))
+    choice_list = whole_choices(
+        actionset,
+        solved.curves,
+        args.item,
+        args.count,
+        limit=PATH_LIST_CAP if want_all else max(graph_paths, path_limit),
+    )
+    choice = (
+        choice_list[0]
+        if choice_list
+        else whole_choice(
+            actionset, solved.curves, args.item, args.count, want_children=True
+        )
+    )
+    whole_ok = choice.cost is not None
+    if whole_ok:
+        # `cost_tu` 与 `bg grade` 同名同义：**均摊口径**（连续松弛）。整次成本只放
+        # `whole_cost_tu`。两处同名不同义时，把两份 JSON 一起读的脚本会静默算错
+        # （实测 `diamond` 的 `cost_tu` 曾是 91.85 与 78.08 两个值）。
+        # `tier` / `score` 仍按整次算——单件规划问的是「真跑一次要多久」。
+        amortised = (payload.get("plan") or {}).get("cost_tu")
+        if amortised is not None:
+            payload["cost_tu"] = amortised
+        payload["whole_cost_tu"] = round(choice.cost, 4)
+        payload["tier"] = units.tier_of(choice.cost)
+        payload["score"] = units.score_from_cost(choice.cost)
+        payload["feasible"] = True
+        payload.pop("missing", None)
+
+    def whole_path_tree(name: str, item_choice: WholeChoice, index: int, best: float) -> PathTree:
+        cost = item_choice.cost or 0.0
+        return PathTree(
+            item=name,
+            rank=index + 1,
+            unit_cost=(cost / args.count if args.count else cost),
+            rank_gap=cost - best,
+            root=to_step_tree(
+                item_choice,
+                depth=max(1, int(getattr(args, "graph_depth", 16))),
+            ),
+            total_cost=cost,
+            need=args.count,
+        )
     wanted = list(args.paths_item or [])
     if args.paths:
         wanted.insert(0, args.item)
@@ -193,6 +356,26 @@ def cmd_plan(args: argparse.Namespace) -> int:
         trees = []
         blank = []
         for name in wanted:
+            extra = (
+                choice_list
+                if name == args.item
+                else whole_choices(
+                    actionset, solved.curves, name, args.count, limit=args.path_limit
+                )
+            )
+            if extra:
+                trees.extend(
+                    whole_path_tree(
+                        name,
+                        item,
+                        index,
+                        extra[0].cost or 0.0,
+                    )
+                    for index, item in enumerate(
+                        extra[: max(1, int(args.path_limit))]
+                    )
+                )
+                continue
             found = rank_paths(actionset, solved, name, limit=args.path_limit)
             if not found:
                 blank.append(name)
@@ -202,17 +385,38 @@ def cmd_plan(args: argparse.Namespace) -> int:
         if blank:
             payload["paths_missing"] = blank
     if getattr(args, "graph_out", None):
-        trees = rank_paths(
-            actionset,
-            solved,
-            args.item,
-            limit=max(1, int(getattr(args, "graph_paths", 3))),
-            depth=max(1, int(getattr(args, "graph_depth", 16))),
-        )
+        if whole_ok:
+            # 整次口径：前 N 条 = 逐个排除上一条的顶层来源，前置各取自己的整次最优。
+            drawn = choice_list[:graph_paths]
+            trees = [
+                whole_path_tree(args.item, item, index, choice_list[0].cost or 0.0)
+                for index, item in enumerate(drawn)
+            ]
+            best_cost = choice_list[0].cost or 0.0
+            # 没画出来的路线：`--graph-paths` 截掉的那些，图上要留痕。
+            skipped_paths = tuple(
+                (
+                    index + 1 + len(drawn),
+                    (item.cost or 0.0) / best_cost if best_cost > 0 else 1.0,
+                    item.cost or 0.0,
+                    item.action_id or "",
+                )
+                for index, item in enumerate(choice_list[len(drawn) :])
+            )
+        else:
+            trees = rank_paths(
+                actionset,
+                solved,
+                args.item,
+                limit=graph_paths,
+                depth=max(1, int(getattr(args, "graph_depth", 16))),
+            )
+            skipped_paths = ()
         if trees:
             rows = None
             limit = max(0, int(getattr(args, "graph_frontiers", 8)))
-            if limit:
+            # 整次口径的树不能与均摊曲线比差额（`frontiers` 会重新 `solve`），先不画。
+            if limit and not whole_ok:
                 rows = [
                     row.as_dict()
                     for row in frontier_rows(
@@ -228,13 +432,29 @@ def cmd_plan(args: argparse.Namespace) -> int:
                 trees,
                 args.item,
                 frontiers=rows,
+                run=_run_info(
+                    args,
+                    actionset,
+                    digest=_input_digest(args),
+                ),
                 solved=solved,
                 actionset=actionset,
                 branches=max(0, int(getattr(args, "graph_branches", 3))),
                 max_nodes=max(0, int(getattr(args, "graph_max_nodes", 500))),
                 ratio_limit=float(getattr(args, "graph_branch_ratio", 1.5) or 0.0),
+                skipped_paths=skipped_paths,
             )
-            payload["graph"] = {"out": written, "paths": len(trees)}
+            payload["graph"] = {
+                "out": written,
+                "paths": len(trees),
+                "paths_skipped": len(skipped_paths),
+            }
+            if whole_ok and max(0, int(getattr(args, "graph_frontiers", 8))):
+                # 前置替换成本要重新 `solve` 并按均摊曲线比差额，与整次树不同口径；
+                # 明说没算，而不是让读者以为「没有脆弱前置」。
+                payload["graph"]["frontiers_skipped"] = (
+                    "整次口径下暂不计算（需要按整次重解整条路线）"
+                )
         else:
             payload["graph"] = {"out": [], "error": "没有可画的路线"}
     payload["provenance"] = {
@@ -268,11 +488,12 @@ def cmd_plan(args: argparse.Namespace) -> int:
             built,
             graph=(payload.get("graph") or {}).get("out") or None,
             out_path=out_path,
+            whole=choice if whole_ok else None,
         )
         if payload.get("paths_text"):
             print()
             print(payload["paths_text"])
-    return 0 if solved.plan.feasible else 1
+    return 0 if (whole_ok or solved.plan.feasible) else 1
 
 
 

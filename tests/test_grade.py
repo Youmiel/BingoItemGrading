@@ -5,12 +5,14 @@
 
 from __future__ import annotations
 
+import math
 from pathlib import Path
 
 import pytest
 from bingo_grading import grade
 from bingo_grading.case.context import CaseContext
 from bingo_grading.plan import solve
+from bingo_grading.plan.whole import whole_choice
 from bingo_grading.sources import actions
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -162,14 +164,24 @@ def test_whole_cost_converges_to_amortised_at_large_demand(ctx: CaseContext) -> 
 def test_atomic_routes_are_rounded_up(ctx: CaseContext) -> None:
     """跑一趟只产出一小部分需求时，必须付整趟：调用次数向上取整。"""
     built = actions.build(ctx, "minecraft:elytra")
-    solved = solve(built.actionset(), "minecraft:elytra", 1.0)
+    aset = built.actionset()
+    solved = solve(aset, "minecraft:elytra", 1.0)
     cost, action_id, _, _ = grade.best_whole_cost(
-        built.actionset(), solved.curves, "minecraft:elytra", 1.0
+        aset, solved.curves, "minecraft:elytra", 1.0
     )
     assert action_id.startswith("loot:")
     assert cost is not None
-    # 末地船的鞘翅每处只有 0.44 个：一趟凑不够一整件时要跑不止一趟。
-    assert cost >= solved.plan.cost
+    # 末地船每处只有约 0.5 个鞘翅：一趟凑不够一整件，必须跑 2 趟。
+    choice = whole_choice(aset, solved.curves, "minecraft:elytra", 1.0)
+    per_trip = aset.get(choice.action_id).effective_yield("minecraft:elytra")
+    assert choice.calls == math.ceil(1.0 / per_trip - 1e-9)
+    assert choice.calls > 1.0, "产出不足一件时必须多于一趟"
+    # **不能**断言「整次 ≥ 均摊」：整次会把同一条路线里重复的 `once` 前置
+    # （`capability:the_end_access` 这类）只收一次，均摊口径的宽松递归会收两遍，
+    # 所以整次可能略便宜（实测 elytra 1439 vs 1479）。只要求不出现数量级偏差。
+    assert cost >= solved.plan.cost * 0.9, (
+        f"整次 {cost:.2f} 比均摊 {solved.plan.cost:.2f} 低太多，取整可能失效"
+    )
 
 
 # ---------------------------------------------------------------- 表格输出

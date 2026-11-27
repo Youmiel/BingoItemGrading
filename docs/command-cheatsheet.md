@@ -19,6 +19,7 @@
 | 画合成图 | `bg plan --item minecraft:diamond --graph-out build/graph-diamond --graph-paths 4 --graph-depth 3 --pack-version 26.3` |
 | 查某个节点为什么这么贵 | `bg observe --item minecraft:iron_pickaxe --table --pack-version 26.3` |
 | 查某方块的挖取代价 | `bg mining --subject minecraft:gold_ore --pack-version 26.3` |
+| 查动作前缀的计数口径与理由 | `bg kinds`（`--out docs/data/action-kinds.md` 重新生成文档） |
 | 查一条统计原始记录 | `bg stat --pack 26.3 --stat ore_exposure --subject minecraft:gold_ore` |
 | 环境体检 | `bg doctor --pack 26.3` |
 | 重建 `build/` 落盘动作图 | `bg index actions --pack-version 26.3` |
@@ -54,17 +55,17 @@
 |---|---|
 | `--item 物品` | 目标物品或能力 |
 | `--count N` | 需要几个 |
-| `--paths` | 列出最优/次优完整链，含每层原料与单价 |
+| `--paths` | 列出最优/次优完整链，含每层原料与单价（整次调用口径） |
 | `--paths-item 物品` | 额外列出中间物的链，可重复 |
 | `--path-limit N` | 列前几条路线 |
 | `--expand` | 展开步骤、前置与逐层曲线（写进 `--out` / `--json` 的输出里） |
 | `--no-prune` | 不做 Pareto 剪枝 |
 | `--out 路径` | 完整诊断写入该文件（UTF-8 JSON）。终端只打摘要 |
 | `--json` | 完整诊断打到终端（机器可读） |
-| `--graph-out 路径` | 写合成图基础名：`.dot`，有 Graphviz 时再写 `.svg` 与 `.html` |
-| `--graph-paths N` | 合成图画前几条路线，默认 3 |
+| `--graph-out 路径` | 写合成图基础名：`.dot`，有 Graphviz 时再写 `.svg` 与 `.html`。HTML 在图上方列出生效参数与可复跑的命令（同 RA 版式） |
+| `--graph-paths N` | 合成图画前几条路线，默认 3；没画的会在图上标出条数、在表格下列出明细 |
 | `--graph-depth N` | 合成图向下展开几层，默认 16（实际被树的深度封顶）；超出的节点画成虚线框，成本已计入 |
-| `--graph-frontiers N` | 附「前置脆弱点」表：禁用某前置当前来源后重算整条路线，列差额最大的 N 处，默认 8，0 关闭 |
+| `--graph-frontiers N` | 附「前置脆弱点」表：禁用某前置当前来源后重算整条路线，列差额最大的 N 处，默认 8，0 关闭（整次口径暂不计算） |
 | `--graph-branches N` | 每个物品最多画几条候选来源，默认 3；0 = 全部，1 = 只画最优 |
 | `--graph-branch-ratio R` | 候选只在「贵不到 R 倍」时才画，默认 1.5；0 = 不限 |
 | `--graph-max-nodes N` | 节点总数上限，默认 500；超出的候选画成橙框虚线节点，0 = 不限 |

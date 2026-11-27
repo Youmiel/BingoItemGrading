@@ -64,6 +64,8 @@ class Step:
     own_unit_cost: float = 0.0
     # 这一层是 `once` 前置（工具、状态）：整笔进固定成本，不参与单价。
     once: bool = False
+    # 整次口径：这个动作实际要完整执行几次（0 = 这棵树来自均摊曲线）。
+    whole_calls: float = 0.0
 
     def as_dict(self) -> dict:
         out = {

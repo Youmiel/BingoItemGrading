@@ -33,11 +33,13 @@ from __future__ import annotations
 import csv
 import io
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from bingo_grading import units
-from bingo_grading.plan.actions import MODE_PER_USE
+from bingo_grading.plan.actions import MODE_PER_USE, is_discrete
+from bingo_grading.plan.supply import TAIL_Z
+from bingo_grading.plan.whole import WholeChoice, dedupe_once_costs, whole_choice
 
 # `uncovered` 里这些不算缺口：路线另有来源，只是本条记录没接上。
 #
@@ -55,39 +57,9 @@ LOW_SEGMENT_COUNT = 1
 NARROW_SEGMENT_COUNT = 3
 # 清单超过这个件数就改用整图求解：单件走目标子图约 1.5 秒，整图一次约 6 秒。
 JOINT_THRESHOLD = 4
-# 不可分割的行动单元：一次调用就是一次真实的行动，不能按 0.3 次计价。
-#
-# 这些动作的产出是「跑一趟/触发一次之后手上有什么」，玩家没法只做 30%。
-# `craft:` / `smelt:` / `mine:` 不在此列——它们可以按件线性拆分
-# （拆一块铁拿 1 个锭，不必按「一次拆出 9 个」的全价算）。
-ATOMIC_PREFIXES = (
-    "loot:",
-    "travel:",
-    "spawner:",
-    "haunt:",
-    "raid:",
-    "fish:",
-    "barter:",
-    "gift:",
-    "bonus:",
-    "cat_gift:",
-    "brush:",
-    "end:",
-    "portal:",
-    "cast:",
-    "igniter:",
-    "train:",
-    "scoop:",
-    "wither:",
-    "roam:",
-    # 剪一次毛必给 2 个（`loot_expectation` 按 `shear` 触发器存的期望），
-    # 所以「要 1 个羊毛」也得剪一次整的，不存在剪半只羊。
-    "shear:",
-)
 
-# 尾部成本的分位系数：正态单侧 95%。与 `plan.supply.Curve.tail_cost` 的默认值
-# 同一个口径，改的时候两处一起改（那里是批量曲线，这里是整次调用）。
-TAIL_Z = 1.645
+# 尾部成本的分位系数由 `plan/supply.py::TAIL_Z` 提供（文件头已 import）：
+# 均摊曲线与整次口径必须用同一个数，否则两者的差就不是纯粹的口径差了。
 
 
 def best_whole_cost(
@@ -100,173 +72,23 @@ def best_whole_cost(
     memo: dict | None = None,
     actions_by_id: dict | None = None,
 ) -> tuple[float | None, str, str, float]:
-    """按**整次调用**口径，递归取「凑够 `demand` 件」最便宜的方案。
+    """求**整次调用**口径下拿到 `demand` 件的最低成本。
 
-    为什么不能直接用 `plan.cost`：引擎的曲线是连续松弛（可以调用 0.3 次），
-    那是为批量规划设计的。拿 1 颗钻石会被算成「调用 0.0023 次」，摊出 0.9 TU；
-    拿 1 个绿宝石的「最优方案」也会变成跑一趟试炼大厅，而实际村庄交易便宜
-    两个数量级。
+    与 `bg plan` 共用 `plan/whole.py` 的同一份递归，两处不会对同一件事给出
+    两个答案：连续松弛允许「调用 0.54 次」，而跑一趟沉船要么进要么不进。
 
-    **递归是关键。** 只对目标层取整会漏掉原料层：`钻石 ← 钻石块` 这条动作
-    本身只要 2 秒手工，但「买 4 个钻石块」同样是整次的事——把它按均摊价算，
-    就会得出「4 次拆块 34.75 TU 比跑一趟 46.37 便宜」的假结论。所以这里对每个
-    动作的 `once` / `per_use` 前置都递归求整次成本，而不是沿用曲线上的单价。
-
-        calls = ceil(demand / 一次调用产出)            # 不可分割的动作至少 1 次
-        total = 动作自带固定成本 + 动作自身时间 × calls
-              + Σ once 前置的整次成本                   # 只付一次
-              + Σ per_use 前置的整次成本(qty × calls)   # 跟着调用次数走
-
-    `demand` 不必为 1：Bingo 的「32 个煤炭」就传 32。均摊与整次的差别随调用
-    次数收敛（差一个 `1 - 1/calls` 量级），但整次仍然更准——余数不能白拿。
-
-    `curves` 是全部物品的供给曲线（`solved.curves`）。`seen` 防环：
-    递归回到当前链路已经出现过的物品时，该分支判为不可行。
-
-    返回 `(成本, 动作 id, 说明, 成本方差)`；没有可用方案时成本为 `None`。
-
-    方差与成本**同步累加**，所以时两者同口径（都是整次调用），可以直接想
-    `p95 = cost + z·sd`。方差只来自「单次产出的件数波动」：
-
-        Var = Σ calls·(单次成本·产出 cv)²           # 本动作
-            + Σ 前置方案的方差                     # 递归（once 只算一次）
-
-    固成本（`overhead`）与未标 `yield_cv` 的动作当作确定量，方差贡献为 0。
-
-    **已知局限**：候选段来自引擎按均摊口径做的 Pareto 剪枝，所以被剪掉、
-    但在整次口径下更便宜的来源不参与比较。结果偏保守（高估）。
-
-    `actions_by_id` / `memo` 可以由调用方传共享的那一份：全库计算时 1414 件
-    共享同一批前置（木棍、铁锰…），不共享的话每次调用都要重建 4481 条的
-    `action_id` 索引、重复算同一个前置。共享后 `memo` 只存非 `None` 的结果，
-    所以不会把「撞环失败」串到别的链路上（见下面不缓存 `None` 的理由）。
-    代价是：某个物品在宽松 `seen` 下算出的价会被严格 `seen` 的链路复用，
-    对环上的物品偏乐观——但环本身是病态数据，`None` 不缓存已经挡住了大多数。
+    返回 `(成本, 动作 id, 说明, 方差)`；不可达时成本为 `None`。
     """
-    if memo is None:
-        memo = {}
-    key = (item, round(demand, 6))
-    if key in memo:
-        return memo[key]
-    if item in seen:
-        # 回到当前链路已经走过的物品：这条分支是环，无法给出有限成本。
-        return (None, "", "", 0.0)
-    best: float | None = None
-    best_var = 0.0
-    best_action = ""
-    best_label = ""
-    curve = curves.get(item)
-    by_id = (
-        actions_by_id
-        if actions_by_id is not None
-        else {action.action_id: action for action in actionset.actions}
+    choice = whole_choice(
+        actionset,
+        curves,
+        item,
+        demand,
+        seen=seen,
+        memo=memo,
+        actions_by_id=actions_by_id,
     )
-    for segment in curve.segments if curve else ():
-        if segment.members:
-            # 并行合成的段：产出无法归到单个动作上，退回线性计价。
-            # cv 已在 `merge_race` 里按速率合成过，直接用段的自己的。
-            total = segment.fixed_cost + segment.unit_cost * demand
-            spread = demand * (segment.unit_cost * segment.cv) ** 2
-            if best is None or total < best:
-                best, best_var, best_action, best_label = (
-                    total,
-                    spread,
-                    segment.action_id,
-                    segment.label,
-                )
-            continue
-        action = by_id.get(segment.action_id)
-        if action is None:
-            continue
-        effective = action.effective_yield(item)
-        if effective <= 0:
-            continue
-        if segment.action_id.startswith(ATOMIC_PREFIXES):
-            # 不可分割：至少跑一趟，余数补齐到整次。
-            calls = 1.0 if demand <= effective else float(
-                math.ceil(demand / effective - 1e-9)
-            )
-        else:
-            calls = demand / effective
-        total = sum(amount for _, amount in action.overhead) + action.cost * calls
-        # 方差按**每件成本**换算：`cv` 描述的是「每件成本的相对波动」，已经含了
-        # 1/μ 的折减（`cv = (s/μ)·√μ`）。所以：
-        #
-        #     Var(n 件) = n · (单次成本 · cv / 单次产出)²
-        #
-        # 不能写成 `calls · (cost · cv)²`：`calls` 是**整次口径取整后**的次数，
-        # 而 `cv` 是按连续松弛定的，两者一乘就把「一趟村庄给 22 个金粒」的方差
-        # 放大 μ² 倍（实测 p95 从 1.17 倍虚到 7 倍）。
-        #
-        # 只取主产物的 `yield_cv`：一条动作顺带产出的其它物品（开一箱拿到五样）
-        # 波动各不相同，套主产物那份数会把它们算成 sd 比均值还大。
-        cv = action.yield_cv if item == action.item else 0.0
-        spread = demand * (action.cost * cv / effective) ** 2
-        for requirement in action.requires:
-            need = requirement.qty * calls if requirement.mode == MODE_PER_USE else (
-                requirement.qty
-            )
-            sub, _, _, sub_var = best_whole_cost(
-                actionset,
-                curves,
-                requirement.item,
-                need,
-                seen=seen | {item},
-                memo=memo,
-                actions_by_id=by_id,
-            )
-            if sub is None:
-                total = None
-                break
-            total += sub
-            # 前置的波动也会传下来（独立随机变量，方差可加）。
-            spread += sub_var
-        if total is None:
-            continue
-        if best is None or total < best:
-            best, best_var, best_action, best_label = (
-                total,
-                spread,
-                segment.action_id,
-                segment.label,
-            )
-    if best is None:
-        # **不能缓存 None**：它往往是「递归撞上 `seen` 里的物品、这条分支被判成环」
-        # 的产物，只对当前这条链路成立。缓存后别的调用会命中它，把本来走得通的
-        # 路线误判为不可行——实测凋灵之星的整次成本就是这么变成 `None` 的：
-        # 先算灵魂沙时缓存了某个「带自己 seen」的失败，再算凋灵骷髅就复用了它。
-        return (None, "", "", 0.0)
-    memo[key] = (best, best_action, best_label, best_var)
-    return memo[key]
-
-
-def whole_cost_of_plan(steps, once_cost: float) -> float | None:
-    """按**整次调用**重算一条**已定方案**的总成本。
-
-    与 `best_whole_cost` 的分工：那个在多个来源之间挑最便宜的，
-    这个只把一条现成的方案（`plan.steps`）换算成整次口径，用于核对
-    「引擎选出的方案在离散世界里的真实代价」。
-    """
-    total = once_cost
-    for step in steps:
-        invocations = float(getattr(step, "invocations", 0.0) or 0.0)
-        if invocations <= 0:
-            continue
-        action_id = str(getattr(step, "action_id", ""))
-        if not action_id.startswith(ATOMIC_PREFIXES):
-            # 可分动作：线性计价，不做取整。
-            total += float(getattr(step, "local_cost", 0.0)) + float(
-                getattr(step, "per_use_cost", 0.0)
-            )
-            continue
-        whole = math.ceil(invocations - 1e-9)
-        if whole <= 0:
-            continue
-        step_cost = float(getattr(step, "local_cost", 0.0)) + float(
-            getattr(step, "per_use_cost", 0.0)
-        )
-        total += step_cost * whole / invocations
-    return total if math.isfinite(total) and total > 0 else None
+    return (choice.cost, choice.action_id, choice.label, choice.variance)
 
 
 @dataclass(frozen=True)
@@ -291,14 +113,17 @@ class Bundle:
         return self.cost is not None
 
     def as_dict(self) -> dict:
+        # 键名与 `DifficultyRow.as_dict()` 统一：`cost_tu` 只表示均摊口径，
+        # 整次口径一律叫 `whole_cost_tu`。组合方案没有均摊版本（它只回答
+        # 「真跑一遍多贵」），所以这里只有 `whole_cost_tu`。
         return {
-            "cost_tu": None if self.cost is None else round(self.cost, 4),
+            "whole_cost_tu": None if self.cost is None else round(self.cost, 4),
             "steps": [
                 {
                     "action_id": step.action_id,
                     "calls": step.calls,
                     "covers": list(step.covers),
-                    "cost_tu": round(step.cost, 4),
+                    "whole_cost_tu": round(step.cost, 4),
                 }
                 for step in self.steps
             ],
@@ -311,13 +136,10 @@ def best_bundle(
     demands: dict[str, float],
     *,
     seen: frozenset[str] = frozenset(),
-    memo: dict | None = None,
-    paid: frozenset[str] = frozenset(),
-    top: bool = True,
 ) -> Bundle:
     """**一次买齐** `demands` 里所有物品的最便宜方案。
 
-    与 `best_whole_cost()` 的区别：那个一次只问一件，几件加在一起会重复付行程，
+    与 `best_whole_cost()` 的分工：那个一次只问一件，几件加在一起会重复付行程，
     而且会把「同一趟顺手拿到的东西」算成各自跑一趟。实测 `loot:buried_treasures`
     一趟同时给钻石 0.96、金锭 4.48、铁锭 8.95、绿宝石 3.86……所以
     「钻石 + 金锭 + 铁锭」这三格跑一趟就够，分别算会高估两三倍。
@@ -329,28 +151,65 @@ def best_bundle(
 
     容量有限的动作用 `capacity` 卡住：一趟给不够的目标不会被这条动作认领。
 
-    `paid` 是**已经付过的一次性状态**（`capability:*`）：两个目标都要「进末地」
-    或「打完一场龙」时只收一次。这是跨动作的共享——`yields` 只覆盖「一个动作
-    同时产出多件」，覆盖不到「两条链共用同一个上游状态」。
-
-    `top` 控制 `paid` 只**在顶层扩展一层**：把 paid 每层都往下扩会让缓存按
-    「已付集合」分片，真实图上组合数爆炸（实测 `pytest` 从 30 s 涨到跑不完）。
-    顶层一层已经覆盖「同一行 Bingo 里两件都要打龙」这个诉求。
+    **前置的定价与 `once` 去重全部交给 `plan/whole.py`**：每步的 `requires` 走
+    `whole_choice`（整次取整 + 递归），最后对整棵树调一次 `dedupe_once_costs`。
+    这里只负责「一个动作同时供给多件」这层语义——那才是 `whole_choice`（单目标）
+    不管的部分。此前这里自带一套 `math.ceil` 和 `paid` 集合（还要把它并进
+    `memo` 键、靠 `top` 只扩一层来防爆炸），两套规则会在「共享发生在第二层以下」
+    时给出不同答案。现在同样的树只按一个规则算。
     """
-    if memo is None:
-        memo = {}
-    key = (
-        tuple(sorted((item, round(amount, 6)) for item, amount in demands.items())),
-        tuple(sorted(paid)),
+    root = _solve_bundle(actionset, curves, demands, seen=seen, memo={})
+    if root.cost is None:
+        return Bundle(None, ())
+    root = dedupe_once_costs(root)
+    steps = tuple(
+        BundleStep(
+            action_id=node.payload[0],
+            calls=node.payload[1],
+            covers=node.payload[2],
+            cost=node.own_cost,
+        )
+        for node in _step_nodes(root)
+    )
+    return Bundle(root.cost, steps)
+
+
+def _step_nodes(node: WholeChoice):
+    """按前序取出「一次买齐」的每一步（`payload` 是那一步的元数据）。"""
+    if node.payload:
+        yield node
+    for child in node.children:
+        yield from _step_nodes(child)
+
+
+def _solve_bundle(
+    actionset,
+    curves,
+    demands: dict[str, float],
+    *,
+    seen: frozenset[str],
+    memo: dict,
+) -> WholeChoice:
+    """枚举「这一趟由谁负责」的整次口径递归（不去重，见 `best_bundle`）。
+
+    返回的节点用 `plan/whole.py` 的 `WholeChoice`：`own_cost` 是本步自身
+    （`overhead + cost × calls`），`children` 是这一前置 + 剩下的目标。
+    `payload` 记这一步的 `(action_id, calls, covers)`。
+    """
+    key = tuple(
+        sorted(
+            (item, round(amount, 6))
+            for item, amount in demands.items()
+            if amount > 0
+        )
     )
     if key in memo:
         return memo[key]
     remaining = {item: amount for item, amount in demands.items() if amount > 0}
     if not remaining:
-        empty = Bundle(0.0, ())
-        memo[key] = empty
-        return empty
-    best: Bundle | None = None
+        return WholeChoice(item="<空>", need=1.0, cost=0.0, own_cost=0.0, tree=True)
+
+    best: WholeChoice | None = None
     for action in actionset.actions:
         covered: list[str] = []
         calls = 0.0
@@ -362,7 +221,7 @@ def best_bundle(
             if math.isfinite(action.capacity) and action.capacity * effective < amount:
                 continue
             need = amount / effective
-            if action.action_id.startswith(ATOMIC_PREFIXES):
+            if is_discrete(action.action_id):
                 need = math.ceil(need - 1e-9)
             else:
                 need = max(need, 1e-9)
@@ -373,57 +232,62 @@ def best_bundle(
         if action.action_id in seen:
             # 回到已经用过的动作：这条分支会原地打转。
             continue
-        total = sum(amount for _, amount in action.overhead) + action.cost * calls
-        # 本条动作付过的状态要累计下来，同一分支的后续目标（`tail`）才不会再付一次。
-        spent = paid
+        own = sum(amount for _, amount in action.overhead) + action.cost * calls
+        total = own
+        children: list[WholeChoice] = []
         for requirement in action.requires:
             once = requirement.mode != MODE_PER_USE
-            if once and requirement.item in spent:
-                # 同一场龙战 / 同一趟末地：别的分支已经付过。
-                continue
-            if once and top:
-                spent = spent | {requirement.item}
-            need = requirement.qty * calls if not once else requirement.qty
-            sub = best_bundle(
+            need = requirement.qty if once else requirement.qty * calls
+            sub = whole_choice(
                 actionset,
                 curves,
-                {requirement.item: need},
-                seen=seen | {action.action_id},
-                memo=memo,
-                paid=spent,
-                top=False,
+                requirement.item,
+                need,
+                # 不传外层 `seen`：那边的集合装的是**动作 id**（防「这条动作再用一次」
+                # 的原地打转），`whole_choice` 的 `seen` 装的是**物品名**。混着传会让
+                # 某个名字相同的物品被误判成环；前置链的环由 `whole_choice` 自己管。
+                # 必须带子树：整树去重要看得见前置**内部**的 `once`
+                # （`capability:minecraft:nether_complexes` 的成本里含
+                # `capability:nether_access`，另一条链也要它）。
+                want_children=True,
             )
             if sub.cost is None:
                 total = None
                 break
             total += sub.cost
+            # 记下付费模式：整树去重只对 `once` 生效。
+            children.append(replace(sub, once=once))
         if total is None:
             continue
         rest = {item: amount for item, amount in remaining.items() if item not in covered}
-        step = BundleStep(
-            action_id=action.action_id,
-            calls=calls,
-            covers=tuple(sorted(covered)),
-            cost=sum(amount for _, amount in action.overhead) + action.cost * calls,
-        )
-        steps = (step,)
         if rest:
-            tail = best_bundle(
+            tail = _solve_bundle(
                 actionset,
                 curves,
                 rest,
                 seen=seen | {action.action_id},
                 memo=memo,
-                paid=spent,
-                top=False,
             )
             if tail.cost is None:
                 continue
             total += tail.cost
-            steps += tail.steps
+            children.append(tail)
+        node = WholeChoice(
+            item="<买齐>",
+            need=1.0,
+            cost=total,
+            own_cost=own,
+            children=tuple(children),
+            tree=True,
+            payload=(action.action_id, calls, tuple(sorted(covered))),
+        )
         if best is None or total < best.cost:
-            best = Bundle(total, steps)
-    memo[key] = best or Bundle(None, ())
+            best = node
+    memo[key] = (
+        best
+        if best is not None
+        else WholeChoice(item="<买齐>", need=1.0, cost=None, blocked="missing")
+    )
     return memo[key]
 
 

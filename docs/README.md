@@ -26,6 +26,7 @@
 - [`sources.md`](data/sources.md)：来源索引的字段与类别。
 - [`stats.md`](data/stats.md)：统计类型清单与依赖。
 - [`units.md`](data/units.md)：TU、时间档位、覆盖率、分数。
+- [`action-kinds.md`](data/action-kinds.md)：动作前缀的计数口径（离散 / 可分割）与理由，`bg kinds` 生成。
 - [`units-conversion.md`](data/units-conversion.md)：数量缩放、交易折算、采集与熔炼折算。
 
 ## 模型

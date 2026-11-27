@@ -21,6 +21,7 @@ from .common import (
     _is_non_structure,
     _node_table,
     _short,
+    _structure_maps,
     cost_cv,
 )
 from .graph import GraphActions
@@ -145,8 +146,12 @@ def _binding_items(
         return None
     made = 0
     for site in sites:
-        cap = _ensure_capability(ctx, result, once_caps, site.structure, route="")
-        travel = result.bundle.provenance.get(f"travel:{site.structure}")
+        # 模板绑定给的是**结构变体**（`minecraft:ancient_city`），而密度行按
+        # **结构集**记（`minecraft:ancient_cities`）。不反查就会查不到间距，
+        # `_ensure_capability` 返回 `None`，行程静默归零。
+        site_set = _structure_maps().set_of(site.structure) or site.structure
+        cap = _ensure_capability(ctx, result, once_caps, site_set, route="")
+        travel = result.bundle.provenance.get(f"travel:{site_set}")
         travel_cost = travel.value if travel is not None else 0.0
         requires: tuple[Requirement, ...] = ()
         if cap:
@@ -175,9 +180,9 @@ def _binding_items(
             replace(
                 action,
                 label=(
-                    f"跑一趟 {_short(site.structure)}，挖那个装好陶片的装饰罐："
-                    f"模板里固定装着 {_short(record.item)}，每处 {site.per_start:.2f} 个"
-                    f"（行程 {travel_cost:.1f} TU + 挖罐子）"
+                    f"跑一趟 {_short(site.structure)}，挖装好物品的 "
+                    f"{_short(container)}：每处 {site.per_start:.2f} 个"
+                    f"（行程 {travel_cost:.1f} TU + 挖一个容器）"
                 ),
             )
         )

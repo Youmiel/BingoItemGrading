@@ -4,13 +4,14 @@ from __future__ import annotations
 
 from .adapter import to_path_graph
 from .html import render_html, write_outputs
-from .options import PathOptions
+from .options import PathOptions, RunInfo
 from .path_graph import PathGraph
 from .render import build_dot, dot_to_svg, graphviz_available
 
 __all__ = [
     "PathGraph",
     "PathOptions",
+    "RunInfo",
     "build_dot",
     "dot_to_svg",
     "graphviz_available",

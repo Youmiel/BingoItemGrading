@@ -52,6 +52,27 @@ def default_of(name: str) -> Any:
 
 
 @dataclass(frozen=True)
+class RunInfo:
+    """这张图的生成参数，用来复现。
+
+    只收**影响图内容**的东西：`--out` / `--json` 这类输出开关不入。
+    写法沿用 RA 的原则——**写全、不写「与默认值的差」**：图会脱离命令行单独
+    传阅，那时无从判断某个值是默认还是特意调的。差别不重要，能复算才重要。
+    """
+
+    # 可直接复制重跑的一行命令。
+    command: str
+    # 逐项明细（`--flag` → 实际生效值），供查证与图间对比。
+    entries: tuple[tuple[str, str], ...] = ()
+    # 输入指纹：动作图条数与统计摘要，用来判断两份图是不是同一批数据画的。
+    action_count: int = 0
+    stats_digest: str = ""
+
+    def describe(self) -> list[str]:
+        return [f"{name} {value}" for name, value in self.entries]
+
+
+@dataclass(frozen=True)
 class PathOptions:
     depth: int = field(default=default_of("depth"))
     branches: int = field(default=default_of("branches"))

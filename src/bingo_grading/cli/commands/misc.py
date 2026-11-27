@@ -14,10 +14,52 @@ from ...sources.knowledge import KnowledgeError, load_routes, load_structure_map
 from ...stats import store as stats_store
 from ...stats.model import StatError
 from ...stats.resolver import StatQuery, StatResolver
+from ...plan.actions import ACTION_KINDS
 
 from ..common import graph_path, print_json, stats_path
 
 
+
+
+def cmd_kinds(args: argparse.Namespace) -> int:
+    """动作前缀的计数口径清单：离散（按整次）还是可分割（按件摊）。
+
+    `--out` 写成 Markdown 供文档引用；直接跑则打到终端。表在
+    `plan/actions.py::ACTION_KINDS`，`ATOMIC_PREFIXES` 由它派生——
+    这份清单不会与求解器口径漂移。
+    """
+    rows = list(ACTION_KINDS)
+    discrete = sum(1 for kind in rows if kind.discrete)
+    if args.out:
+        lines = [
+            "# 动作前缀的计数口径",
+            "",
+            "> 由 `bg kinds --out docs/data/action-kinds.md` 生成，不要手改。",
+            "",
+            "`discrete` 决定「凑 N 件」怎么计次：**离散**按 `ceil(N / 单次产出)`；",
+            "**可分割**按 `N / 单次产出`。单次产出恰为 1 时两者同值，语义仍要分清。",
+            "",
+            f"共 {len(rows)} 个前缀：离散 {discrete} 个，可分割 {len(rows) - discrete} 个。",
+            "",
+            "| 前缀 | 计数口径 | 理由 |",
+            "|---|---|---|",
+        ]
+        for kind in rows:
+            flag = "离散" if kind.discrete else "可分割"
+            lines.append(f"| `{kind.prefix}:` | {flag} | {kind.why} |")
+        lines.append("")
+        Path(args.out).parent.mkdir(parents=True, exist_ok=True)
+        Path(args.out).write_text("\n".join(lines), encoding="utf-8", newline="\n")
+        print(f"写入 {args.out}（{len(rows)} 条）")
+        return 0
+
+    width = max(len(kind.prefix) for kind in rows) + 1
+    for kind in rows:
+        flag = "离散  " if kind.discrete else "可分割"
+        print(f"{kind.prefix + ':':<{width}} {flag}  {kind.why}")
+    print()
+    print(f"共 {len(rows)} 个前缀：离散 {discrete}，可分割 {len(rows) - discrete}")
+    return 0
 
 
 def cmd_config(args: argparse.Namespace) -> int:

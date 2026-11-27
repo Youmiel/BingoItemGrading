@@ -51,12 +51,19 @@ def _grade_items(args: argparse.Namespace) -> list[str]:
 
 
 
-def _whole_items(index_path: Path) -> tuple[dict, list[str], dict[str, int]]:
-    """来源索引里的全部物品，以及每件的来源条数。"""
+def _whole_items(
+    index_path: Path, extra: tuple[str, ...] = ()
+) -> tuple[dict, list[str], dict[str, int]]:
+    """来源索引里的全部物品，以及每件的来源条数。
+
+    `extra` adds items without source records (craft-only items) with a count of 0.
+    """
     header, records = source_index.read(index_path)
     counts: dict[str, int] = {}
     for record in records:
         counts[record.item] = counts.get(record.item, 0) + 1
+    for item in extra:
+        counts.setdefault(item, 0)
     return header, sorted(counts), counts
 
 
@@ -65,7 +72,9 @@ def _build_whole_graph(
     ctx: CaseContext, args: argparse.Namespace, index_path: Path
 ):
     """一次构建覆盖索引里的全部物品。"""
-    header, items, counts = _whole_items(index_path)
+    header, items, counts = _whole_items(
+        index_path, ctx.recipe_outputs(pack=args.pack_version)
+    )
     if not items:
         raise CaseError(f"来源索引里没有任何物品：{index_path}")
     print(

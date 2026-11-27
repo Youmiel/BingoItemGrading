@@ -145,6 +145,12 @@ class RecipesMixin:
         return (row or {}).get("tool_level") or None
 
 
+    def recipe_outputs(self, *, pack: str | None = None) -> tuple[str, ...]:
+        """Every item some recipe produces; empty when recipe facts are missing."""
+        index, _ = self._recipe_index(pack)
+        return () if index is None else tuple(index.outputs())
+
+
     def _recipe_index(self, pack: str | None = None):
         pack = pack or self.pack_version()
         if pack not in self._recipe_cache:

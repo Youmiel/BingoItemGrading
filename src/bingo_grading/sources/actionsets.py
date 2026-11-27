@@ -33,7 +33,7 @@ ACTIONS_SCHEMA = 1
 # 下列改动要 +1：`sources/actions/*` 的动作生成、`case/context/*` 的取值口径、
 # 全库 targets 的取法（例如把纯配方物品纳入）。只改求解/计价（`plan/*`、
 # `grade.py`）不影响落盘图，不用动。
-BUILD_POLICY = 1  # 1：2026-11-27 引入，初始值
+BUILD_POLICY = 2  # 1：初始；2：全库 targets 含只有配方的物品
 
 # 头部里用到的键。写盘与读盘共用，避免两处各写一遍。
 _HEADER_KEYS = (

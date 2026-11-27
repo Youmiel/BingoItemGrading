@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import re
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -109,7 +110,8 @@ class StructureMaps:
     def set_for_template(self, path: str) -> str | None:
         """模板路径 → 结构集合。键是 `structure/` 之后的部分。"""
         normalized = path.replace("data/", "", 1)
-        rest = normalized.split("/structure/", 1)[-1]
+        # Strip only the first segment; templates may have a `structures/` subdirectory.
+        rest = re.sub(r"^[^/]+/structures?/", "", normalized, count=1)
         return _longest_prefix(rest, self.template_prefixes)
 
     def members_of(self, structure_set: str) -> tuple[str, ...]:

@@ -270,11 +270,13 @@ def sync(pack: str, *, dry_run: bool = False) -> SyncReport:
         copied = (
             (0, 0)
             if dry_run
-            else _copy_tree(datapack.path, target, keep_extra=("minecraft/structure",))
+            else _copy_tree(
+                datapack.path, target, keep_extra=("minecraft/structure", "minecraft/structures")
+            )
         )
         if dry_run:
             copied = _tree_digest(datapack.path)[:2]
-        report.entries.append(_entry("datapack-merged", datapack, target, copied))
+        datapack_target, datapack_copied = target, copied
     else:
         report.skipped.append(
             f"datapack-merged: 未找到 {datapack.path}"
@@ -286,10 +288,9 @@ def sync(pack: str, *, dry_run: bool = False) -> SyncReport:
     #    同一个数据包视图，让它和 `loot_table` 一样待在 `data/minecraft/` 下。
     shapes = paths.upstream_vanilla_structures(pack)
     if shapes.exists:
-        source = shapes.path / "minecraft" / "structure"
-        target = (
-            paths.UPSTREAM_ROOT / pack / "datapack" / "data" / "minecraft" / "structure"
-        )
+        name = "structure" if (shapes.path / "minecraft" / "structure").is_dir() else "structures"
+        source = shapes.path / "minecraft" / name
+        target = paths.UPSTREAM_ROOT / pack / "datapack" / "data" / "minecraft" / name
         copied = (0, 0) if dry_run else _copy_tree(source, target)
         if dry_run:
             copied = _tree_digest(source)[:2]
@@ -298,6 +299,10 @@ def sync(pack: str, *, dry_run: bool = False) -> SyncReport:
         )
     else:
         report.skipped.append(f"structure-templates: 未找到 {shapes.path}")
+
+    if datapack.exists:
+        # Structure templates land in the same directory; record the digest after both steps.
+        report.entries.append(_entry("datapack-merged", datapack, datapack_target, datapack_copied))
 
     # 地形包原件与 `version.json` 都不再同步：overlay 判定与逐层覆盖已由上游完成
     # （见第 3 步），本项目不需要格式号，也没有任何代码再读 `data/packs/`。

@@ -205,3 +205,18 @@ def test_surface_cost_scales_with_blocks_per_item(ctx: CaseContext) -> None:
     assert third.yields["minecraft:stick"] == 1.0
     assert third.overhead == full.overhead
 
+
+
+def test_naturally_generated_block_with_9_to_1_recipe_is_mined(ctx: CaseContext) -> None:
+    """Melon has a 9-to-1 recipe but generates naturally, so it keeps its mining route."""
+    built = actions.build(ctx, "minecraft:melon_slice")
+    ids = {a.action_id for a in built.actionset().actions if "minecraft:melon_slice" in a.yields}
+    assert any(name.startswith("mine:vein:melon") for name in ids), f"melon has no mining route: {ids}"
+    assert "minecraft:melon_slice" not in built.missing_prereqs
+
+
+def test_compressed_block_still_has_no_scatter_route(ctx: CaseContext) -> None:
+    """Coal blocks are not placed by any feature and stay compressed."""
+    built = actions.build(ctx, "minecraft:coal_block")
+    ids = {a.action_id for a in built.actionset().actions}
+    assert not any(name.startswith("mine:vein:coal_block") for name in ids)

@@ -191,10 +191,12 @@ def _block(
     # 判据用「配方里有 ≥4 个同一原料」，不用 `worldgen.jsonl` 的 feature 引用：
     # 那个表**覆盖不全**——鲜巢是 tree decorator，上游一行都没有，拿它当
     # 「不自然生成」的凭据会把蜂巢的散点路线误删。
+    #
+    # Blocks placed by biome features are not compressed blocks (melon, packed ice).
     conversions, _layer = ctx.recipe_conversions(block, pack=pack)
     compressed = any(
         qty >= 4 for conversion in conversions for _, qty in conversion.inputs
-    )
+    ) and not ctx.placed_by_biome_feature(block, pack=pack)
     vein = (
         mine_vein(
             result.bundle,

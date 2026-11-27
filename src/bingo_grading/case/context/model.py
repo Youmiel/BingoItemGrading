@@ -123,6 +123,93 @@ def _harvest_rows(path: str) -> dict[str, dict]:
     return rows
 
 
+@lru_cache(maxsize=4)
+def _registry_entries(path: str, registry: str) -> frozenset[str] | None:
+    """Entries of one registry in upstream `registry.jsonl`; `None` if absent."""
+    target = Path(path)
+    if not target.is_file():
+        return None
+    for line in target.read_text(encoding="utf-8").splitlines():
+        try:
+            payload = json.loads(line).get("payload") or {}
+        except json.JSONDecodeError:
+            continue
+        if payload.get("registry") == registry:
+            return frozenset(str(entry) for entry in payload.get("entries") or ())
+    return None
+
+
+@lru_cache(maxsize=4)
+def _code_container_rows(path: str) -> tuple[dict, ...]:
+    """Upstream `export/structure_containers.jsonl`: containers placed by structure code."""
+    target = Path(path)
+    if not target.is_file():
+        return ()
+    rows: list[dict] = []
+    for line in target.read_text(encoding="utf-8").splitlines():
+        try:
+            row = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(row, dict):
+            rows.append(row)
+    return tuple(rows)
+
+
+@lru_cache(maxsize=4)
+def _biome_feature_blocks(worldgen: str, biome_dir: str) -> frozenset[str]:
+    """Blocks placed by features reachable from biome `features` lists.
+
+    Only `block` references on feature rows count; blocks on placed feature rows
+    come from placement predicates.
+    """
+    nodes: dict[tuple[str, str], list[dict]] = {}
+    target = Path(worldgen)
+    if not target.is_file():
+        return frozenset()
+    for line in target.read_text(encoding="utf-8").splitlines():
+        try:
+            payload = json.loads(line).get("payload") or {}
+        except json.JSONDecodeError:
+            continue
+        kind, node_id = payload.get("worldgen_kind"), payload.get("id")
+        if not isinstance(kind, str) or not isinstance(node_id, str):
+            continue
+        marker = f"/worldgen/{kind}/"
+        if marker not in node_id:
+            continue
+        name = "minecraft:" + node_id.split(marker, 1)[1]
+        kind = "feature" if kind == "configured_feature" else kind
+        nodes[(kind, name)] = list(payload.get("references") or [])
+    stack: list[tuple[str, str]] = []
+    for path in sorted(Path(biome_dir).glob("*.json")):
+        try:
+            biome = json.loads(path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            continue
+        for step in biome.get("features") or ():
+            if isinstance(step, list):
+                stack.extend(("placed_feature", ref) for ref in step if isinstance(ref, str))
+    blocks: set[str] = set()
+    seen: set[tuple[str, str]] = set()
+    while stack:
+        node = stack.pop()
+        if node in seen or node not in nodes:
+            continue
+        seen.add(node)
+        for ref in nodes[node]:
+            ref_id, slot = ref.get("id"), ref.get("slot")
+            if not isinstance(ref_id, str):
+                continue
+            if slot == "block" and node[0] == "feature":
+                blocks.add(ref_id)
+            elif slot == "feature":
+                # Nested features may reference either a feature or a placed feature.
+                stack.append(("feature", ref_id))
+                stack.append(("placed_feature", ref_id))
+    return frozenset(blocks)
+
+
 
 
 @dataclass(frozen=True)

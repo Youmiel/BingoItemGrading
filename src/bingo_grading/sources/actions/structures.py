@@ -104,6 +104,12 @@ def _structure_batches(
         # 一张图只标一处，去下一处要新的，所以是 `per_use`。
         # 图本身有来源（沉船、海底废墟、废弃营地），走 `visit` 递归定价。
         map_item = _structure_maps().map_for(structure)
+        if map_item is not None and ctx.item_registered(map_item) is False:
+            result.bundle.note(
+                f"{_short(map_item)} does not exist in this version; "
+                f"{_short(structure)} location treated as known (optimistic)"
+            )
+            map_item = None
         if map_item is not None:
             if result.visit is not None:
                 result.visit(map_item, 0)

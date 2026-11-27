@@ -71,15 +71,17 @@ def _loot(
             structure, dimension=ctx.structure_dimension(structure)
         )
     if chests is None:
+        chests = ctx.code_placed_tables_per_site(structure, record.subject, pack=pack)
+    if chests is None:
         result.uncovered[f"缺每处箱数:{structure}"] += 1
         return None
     cap = _ensure_travel(record, ctx, result, once_caps, structure)
-    requires: tuple[Requirement, ...] = ()
-    if cap:
-        # **每趟**付一次行程，不是 once：一趟只能开掉这张表的
-        # `loot_tables[table]` 个箱（宝藏箱每处只有 0.1 个），拿更多就要再跑一趟。
-        # 写成 once 会让「一趟的产出」被当成无限供给，稀有表单价被低估一两个量级。
-        requires = (Requirement(cap, 1.0, MODE_PER_USE),)
+    if cap is None:
+        return None
+    # **每趟**付一次行程，不是 once：一趟只能开掉这张表的
+    # `loot_tables[table]` 个箱（宝藏箱每处只有 0.1 个），拿更多就要再跑一趟。
+    # 写成 once 会让「一趟的产出」被当成无限供给，稀有表单价被低估一两个量级。
+    requires = (Requirement(cap, 1.0, MODE_PER_USE),)
     containers = ctx.containers_per_site(
         structure, dimension=ctx.structure_dimension(structure)
     )
@@ -92,7 +94,7 @@ def _loot(
         open_containers=containers.value if containers else None,
         primary=record.item,
         action_id=f"loot:{_short(record.subject)}",
-        with_travel=not cap,
+        with_travel=False,
         requires=requires,
         # 下界/末地的箱子表带的是那个维度的行，不传维度会一条也查不到。
         dimension=ctx.structure_dimension(structure),

@@ -19,6 +19,7 @@
 
 from __future__ import annotations
 
+import json
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -206,6 +207,26 @@ def recipe_facts(pack: str, override: str | None = None) -> Resolved:
     return Resolved(resolved.path / "facts" / "recipe.jsonl", resolved.layer)
 
 
+def registry_facts(pack: str, override: str | None = None) -> Resolved:
+    """Upstream `facts/registry.jsonl`."""
+    if override:
+        return Resolved(Path(override), OVERRIDE)
+    resolved = recipe_analysis(pack)
+    if resolved.layer == MISSING:
+        return resolved
+    return Resolved(resolved.path / "facts" / "registry.jsonl", resolved.layer)
+
+
+def worldgen_facts(pack: str, override: str | None = None) -> Resolved:
+    """Upstream `facts/worldgen.jsonl`."""
+    if override:
+        return Resolved(Path(override), OVERRIDE)
+    resolved = recipe_analysis(pack)
+    if resolved.layer == MISSING:
+        return resolved
+    return Resolved(resolved.path / "facts" / "worldgen.jsonl", resolved.layer)
+
+
 def recipe_export(pack: str, override: str | None = None) -> Resolved:
     """上游 `export/` 目录（结构清单、模板表、刷怪表、挖掘表等导出物）。
 
@@ -291,6 +312,13 @@ def datapack(pack: str, override: str | None = None) -> Resolved:
     return Resolved(local, LOCAL if local.is_dir() else MISSING)
 
 
+def _versioned_dir(parent: Path, current: str, legacy: str) -> Path:
+    """`parent/current`, or `parent/legacy` when only the legacy directory exists."""
+    if (parent / current).is_dir() or not (parent / legacy).is_dir():
+        return parent / current
+    return parent / legacy
+
+
 def loot_tables(pack: str, override: str | None = None) -> Resolved:
     """战利品表：数据包里的 `minecraft/loot_table`。
 
@@ -300,7 +328,7 @@ def loot_tables(pack: str, override: str | None = None) -> Resolved:
     if override:
         return Resolved(Path(override), OVERRIDE)
     resolved = datapack(pack)
-    path = resolved.path / "minecraft" / "loot_table"
+    path = _versioned_dir(resolved.path / "minecraft", "loot_table", "loot_tables")
     if resolved.layer != MISSING and path.is_dir():
         return Resolved(path, resolved.layer)
     return Resolved(path, MISSING)
@@ -311,7 +339,7 @@ def structure_templates(pack: str, override: str | None = None) -> Resolved:
     if override:
         return Resolved(Path(override), OVERRIDE)
     resolved = datapack(pack)
-    path = resolved.path / "minecraft" / "structure"
+    path = _versioned_dir(resolved.path / "minecraft", "structure", "structures")
     if resolved.layer != MISSING and path.is_dir():
         return Resolved(path, resolved.layer)
     return Resolved(path, MISSING)
@@ -342,13 +370,25 @@ def upstream_recipe_vocabulary() -> Resolved:
 
 
 def upstream_collector_run(pack: str) -> Resolved:
-    """上游 WGS 的最新一次统计运行目录（按 ISO 时间戳目录名排序）。"""
+    """Latest WGS stats run for this version (runs without a recorded version are kept)."""
     stats = _root("collector") / "stats"
     if stats.is_dir():
-        runs = sorted(p for p in stats.iterdir() if p.is_dir())
+        runs = sorted(
+            p for p in stats.iterdir() if p.is_dir() and _run_version(p) in (None, pack)
+        )
         if runs:
             return Resolved(runs[-1], REF)
     return Resolved(stats, MISSING)
+
+
+def _run_version(run: Path) -> str | None:
+    try:
+        summary = json.loads((run / "summary.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    target = summary.get("target") if isinstance(summary, dict) else None
+    version = target.get("minecraftVersion") if isinstance(target, dict) else None
+    return version if isinstance(version, str) else None
 
 
 def upstream_datapack_merged(pack: str) -> Resolved:
@@ -373,9 +413,12 @@ def upstream_vanilla_structures(pack: str) -> Resolved:
     """
     cache = _root("recipe_analysis") / ".cache"
     if cache.is_dir():
+        # Cache directory names do not encode the version; check the bundler instead.
         for server in sorted(cache.glob("server-*"), reverse=True):
+            if not (server / "bundler" / "META-INF" / "versions" / pack).is_dir():
+                continue
             path = server / "structures" / "data"
-            if (path / "minecraft" / "structure").is_dir():
+            if any((path / "minecraft" / name).is_dir() for name in ("structure", "structures")):
                 return Resolved(path, REF)
     return Resolved(cache, MISSING)
 

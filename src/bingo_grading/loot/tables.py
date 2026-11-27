@@ -20,6 +20,7 @@ from pathlib import Path
 from mcshared.loot import Table, normalize_table
 
 LOOT_DIR = "loot_table"
+LOOT_DIRS = (LOOT_DIR, "loot_tables")
 
 
 class LootTableError(ValueError):
@@ -111,9 +112,11 @@ def _namespace_roots(directory: Path) -> list[tuple[str, Path]]:
         out: list[tuple[str, Path]] = []
         for data_dir in data_dirs:
             for namespace_dir in sorted(child for child in data_dir.iterdir() if child.is_dir()):
-                loot = namespace_dir / LOOT_DIR
-                if loot.is_dir():
-                    out.append((namespace_dir.name, loot))
+                for name in LOOT_DIRS:
+                    loot = namespace_dir / name
+                    if loot.is_dir():
+                        out.append((namespace_dir.name, loot))
+                        break
         if out:
             return out
         # 有 `data/` 结构但没有任何 `loot_table/`：这个包压根不含战利品表。
@@ -123,7 +126,7 @@ def _namespace_roots(directory: Path) -> list[tuple[str, Path]]:
         return []
 
     # 直接给了 `<ns>/loot_table/`
-    if directory.name == LOOT_DIR and directory.parent.is_dir():
+    if directory.name in LOOT_DIRS and directory.parent.is_dir():
         return [(directory.parent.name, directory)]
 
     # 兜底：把目录当成某个命名空间下的 loot_table

@@ -530,10 +530,17 @@ def _raid_mob(
         return 0
     travel = result.bundle.provenance.get("travel:minecraft:villages")
     travel_cost = travel.value if travel is not None else 0.0
-    result.visit("minecraft:ominous_bottle", 0)
-    requires: tuple[Requirement, ...] = (
-        Requirement("minecraft:ominous_bottle", 1.0, MODE_ONCE),
-    )
+    if ctx.item_registered("minecraft:ominous_bottle") is False:
+        # Without ominous bottles, Bad Omen comes from killing an outpost captain.
+        trigger = _ensure_capability(
+            ctx, result, once_caps, "minecraft:pillager_outposts", route=""
+        )
+        if trigger is None:
+            return 0
+    else:
+        trigger = "minecraft:ominous_bottle"
+        result.visit(trigger, 0)
+    requires: tuple[Requirement, ...] = (Requirement(trigger, 1.0, MODE_ONCE),)
     kill = seconds(gamedata.KILL_SECONDS)
     gap = seconds(gamedata.RAID_WAVE_SECONDS)
     made = 0

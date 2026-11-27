@@ -5,12 +5,18 @@ from __future__ import annotations
 import pytest
 
 from bingo_grading.recipes.expand import build_index
-from bingo_grading.slots.build import build as build_slots
+from bingo_grading.slots.build import METHODS, OBTAIN_METHOD, build as build_slots
 from bingo_grading.slots.report import item_slots, report
+from bingo_grading.sources.constants import SOURCE_TYPES
 from bingo_grading.sources.index import build as build_sources
 
 from .support import redstone_graph
 from .test_recipes import probabilities, routes
+
+
+def test_every_source_type_has_a_reported_obtain_method() -> None:
+    assert set(OBTAIN_METHOD) == set(SOURCE_TYPES)
+    assert set(OBTAIN_METHOD.values()) <= set(METHODS)
 
 
 @pytest.fixture()

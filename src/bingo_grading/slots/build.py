@@ -36,9 +36,11 @@ OBTAIN_METHOD = {
     "loot_table": "loot",
     "suspicious_block": "suspicious",
     "shear": "shear",
+    "convert": "convert",
+    "fill": "fill",
 }
 
-METHODS = ("mine", "kill", "trade", "loot", "suspicious", "shear", "silk", "farm")
+METHODS = (*OBTAIN_METHOD.values(), "silk", "farm")
 
 # 精准采集不是独立来源，是挖掘方式的限定。
 SILK_TOUCH = "enchant:minecraft:silk_touch"

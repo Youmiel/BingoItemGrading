@@ -165,7 +165,11 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         total = sum(missing.values())
         if total:
             sample = "、".join(f"{name}×{count}" for name, count in list(missing.items())[:5])
-            checks.append(("actions", False, f"{total} 个动作的前置物品不存在：{sample}"))
+            affected = sum(
+                any(req.item in missing for req in action.requires)
+                for action in actions_file.actionset.actions
+            )
+            checks.append(("actions", False, f"{affected} actions miss {len(missing)} prerequisite items, {total} references: {sample}"))
         else:
             checks.append(
                 ("actions", True, f"{len(actions_file.actionset.actions)} 个动作，前置完整")

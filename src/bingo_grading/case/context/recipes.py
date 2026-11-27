@@ -6,9 +6,17 @@ from __future__ import annotations
 from bingo_grading import paths
 from bingo_grading import gamedata, units
 from bingo_grading.recipes import facts
-from .model import Sourced, _harvest_rows
+from .model import Sourced, _harvest_rows, _registry_entries
 
 class RecipesMixin:
+    def item_registered(self, item: str, *, pack: str | None = None) -> bool | None:
+        """Whether the item registry has this item; `None` if the registry is unavailable."""
+        resolved = paths.registry_facts(pack or self.pack_version())
+        if not resolved.exists:
+            return None
+        entries = _registry_entries(str(resolved.path), "minecraft:item")
+        return None if entries is None else item in entries
+
     def recipe_ratio(
         self,
         output: str,

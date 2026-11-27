@@ -259,6 +259,16 @@ def _condition_probability(node: dict, ctx: _Ctx, depth: int = 0) -> float:
         ctx.skip(f"条件无类型：{sorted(node)}")
         return 0.0
 
+    # Legacy names with the same meaning.
+    if kind == "minecraft:alternative":
+        kind = "minecraft:any_of"
+    elif kind == "minecraft:block_state_property":
+        return _match_block_probability({"state": node.get("properties")}, ctx)
+    elif kind == "minecraft:random_chance_with_looting":
+        chance = node.get("chance")
+        ctx.assume("looting bonus assumed at enchantment level 0")
+        return float(chance) if isinstance(chance, (int, float)) else 0.0
+
     if kind in ("minecraft:tool/can_silk_touch", "minecraft:tool/can_shear"):
         return ctx.tool_probability
 
@@ -392,6 +402,7 @@ def _expected_count(functions: tuple[dict, ...], ctx: _Ctx) -> float:
             continue
         elif kind in (
             "minecraft:enchanted_count_increase",
+            "minecraft:looting_enchant",
             "minecraft:apply_bonus",
         ):
             ctx.assume("不计附魔对数量的加成")
@@ -402,6 +413,9 @@ def _expected_count(functions: tuple[dict, ...], ctx: _Ctx) -> float:
             "minecraft:set_name",
             "minecraft:set_enchantments",
             "minecraft:copy_components",
+            "minecraft:copy_name",
+            "minecraft:copy_nbt",
+            "minecraft:set_contents",
             "minecraft:copy_state",
             "minecraft:set_stew_effect",
             "minecraft:set_ominous_bottle_amplifier",
@@ -492,7 +506,10 @@ def _only_subject_attributes(children: tuple[Entry, ...]) -> bool:
     for child in children:
         for condition in child.conditions:
             kind = _cond_type(condition)
-            if kind not in NEUTRAL_CONDITIONS and kind != "minecraft:match_block":
+            if kind not in NEUTRAL_CONDITIONS and kind not in (
+                "minecraft:match_block",
+                "minecraft:block_state_property",
+            ):
                 # 有随机率/工具条件混进来，就必须走「第一个成立者」那套。
                 return False
     return True

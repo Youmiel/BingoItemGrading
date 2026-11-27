@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import math
 
-from bingo_grading import gamedata, mining_facts, units
+from bingo_grading import gamedata, mining_facts, paths, units
 from bingo_grading.mining import CHUNK_FOOTPRINT
-from .model import Sourced, WATER_BLOCKS, _structure_maps
+from .model import Sourced, WATER_BLOCKS, _code_container_rows, _structure_maps
 
 class StructuresMixin:
     def village_chests_per_site(self, *, dimension: str | None = None) -> Sourced | None:
@@ -142,6 +142,42 @@ class StructuresMixin:
             )
         )
         return Sourced(average, "structure_content:loot_tables", detail)
+
+
+    def code_placed_tables_per_site(
+        self,
+        structure_set: str,
+        table: str,
+        *,
+        pack: str | None = None,
+    ) -> Sourced | None:
+        """Chests of this table placed by structure code (upstream `*Pieces.java`).
+
+        `sites` counts per structure piece, so it is only used when the structure has
+        neither measured nor template content.
+        """
+        members = set(_structure_maps().members_of(structure_set))
+        if not members:
+            return None
+        if any(self.store.of("structure_content", member) for member in members):
+            return None
+        resolved = paths.recipe_export(pack or self.pack_version())
+        if not resolved.exists:
+            return None
+        for row in _code_container_rows(str(resolved.path / "structure_containers.jsonl")):
+            if row.get("table") != table:
+                continue
+            if not members & set(row.get("structures") or ()):
+                continue
+            sites = row.get("sites")
+            if isinstance(sites, (int, float)) and sites > 0:
+                sources = "、".join(str(src).rsplit("/", 1)[-1] for src in row.get("sources") or ())
+                detail = (
+                    f"{structure_set} has no measured or template chest count; using "
+                    f"{sites:g} {table.split('/')[-1]} placed by structure code ({sources})"
+                )
+                return Sourced(float(sites), "recipe_export:structure_containers", detail)
+        return None
 
 
     def mob_search_cost(

@@ -4,10 +4,22 @@ from __future__ import annotations
 
 import math
 
-from bingo_grading import gamedata
-from .model import FISH_WATER_BIOMES, Sourced
+from bingo_grading import gamedata, paths
+from .model import FISH_WATER_BIOMES, Sourced, _biome_feature_blocks
 
 class BiomesMixin:
+    def placed_by_biome_feature(self, block: str, *, pack: str | None = None) -> bool:
+        """Whether a biome feature places this block. Only positive evidence of natural
+        generation: tree decorators are not feature references. `False` when data is missing.
+        """
+        pack = pack or self.pack_version()
+        worldgen = paths.worldgen_facts(pack)
+        datapack = paths.datapack(pack)
+        if not worldgen.exists or not datapack.exists:
+            return False
+        biome_dir = datapack.path / "minecraft" / "worldgen" / "biome"
+        return block in _biome_feature_blocks(str(worldgen.path), str(biome_dir))
+
     def biome_spawn_weights(
         self, mob: str
     ) -> list[tuple[str, float, float, str]]:
